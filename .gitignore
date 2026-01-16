@@ -1,0 +1,16 @@
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# Python compilation files
+__pycache__/
+*.py[cod]
+
+# Environment variables (secrets)
+.env
+
+# IDE settings (VSCode/Pycharm)
+.vscode/
+.idea/
+.DS_Store
