@@ -113,5 +113,185 @@ def main():
     interpolated_data.to_parquet('tomato_processed_data.parquet')
 
 
+def analyze_experiments(df):
+    # 1. קיבוץ לפי צמח ייחודי כדי לקבל סטטיסטיקות לצמח
+    plant_stats = df.groupby('unique_id').agg({
+        'exp_ID': 'first',
+        'timestamp': ['min', 'max'],
+        's4': 'count',  # מספר דגימות המשקל
+        'soil_sand': 'first'  # סוג האדמה
+    })
+
+    # סידור שמות העמודות
+    plant_stats.columns = ['exp_ID', 'start_time', 'end_time', 'sample_count', 'soil_type']
+
+    # חישוב משך הזמן בימים לכל צמח
+    plant_stats['duration_days'] = (plant_stats['end_time'] - plant_stats['start_time']).dt.total_seconds() / (
+                3600 * 24)
+
+    # 2. עכשיו, בוא נקבץ את זה לפי ניסויים (Experiments) כדי לקבל תמונת על
+    experiment_summary = plant_stats.groupby('exp_ID').agg({
+        'exp_ID': 'count',  # כמה צמחים בניסוי
+        'duration_days': ['mean', 'min', 'max'],  # משך הניסוי הממוצע
+        'sample_count': 'sum',  # סה"כ דגימות בניסוי
+        'start_time': 'min',  # מתי הניסוי התחיל (הצמח הראשון)
+        'end_time': 'max'  # מתי הניסוי נגמר
+    })
+
+    # סידור שמות לעמודות של הניסויים
+    experiment_summary.columns = [
+        'num_plants',
+        'avg_duration_days', 'min_duration', 'max_duration',
+        'total_samples',
+        'exp_start', 'exp_end'
+    ]
+
+    return plant_stats, experiment_summary
+
+
+def create_daily_summary(df):
+    print("Processing daily summary...")
+
+    # 1. יצירת עמודת 'תאריך' (ללא שעה) כדי לקבץ לפי ימים
+    df['date'] = df['timestamp'].dt.date
+
+    # 2. קיבוץ לפי צמח ויום
+    # אנחנו רוצים את המשקל הראשון והאחרון בכל יום
+    daily_group = df.groupby(['unique_id', 'date'])
+
+    daily_df = daily_group.agg({
+        'exp_ID': 'first',  # מזהה ניסוי
+        's4': ['first', 'last'],  # משקל התחלה וסוף
+        'soil_sand': 'first',  # סוג אדמה
+        'timestamp': 'min'  # זמן התחלת היום (בשביל סידור)
+    }).reset_index()
+
+    # 3. סידור שמות העמודות (הפעולה למעלה יוצרת MultiIndex)
+    daily_df.columns = ['unique_id', 'date', 'exp_ID', 'start_weight', 'end_weight', 'soil_type', 'start_timestamp']
+
+    # 4. חישוב "מספר היום בניסוי" לכל צמח
+    # אנחנו ממיינים לפי צמח וזמן, ואז נותנים מספור רץ לכל תאריך של אותו צמח
+    daily_df = daily_df.sort_values(['unique_id', 'date'])
+    daily_df['day_num'] = daily_df.groupby('unique_id').cumcount() + 1
+
+    # 5. ניקוי וסידור סופי
+    # נוריד את עמודת העזר של timestamp
+    final_df = daily_df[['unique_id', 'exp_ID', 'day_num', 'date', 'start_weight', 'end_weight', 'soil_type']]
+
+    return final_df
+
+###############################
+def print_experiment_sample(filename, target_exp_id):
+    print(f"Loading {filename}...")
+    try:
+        df = pd.read_parquet(filename)
+    except FileNotFoundError:
+        print("File not found. Please run the previous step first.")
+        return
+
+    # סינון לפי הניסוי המבוקש
+    exp_data = df[df['exp_ID'] == target_exp_id].copy()
+
+    if exp_data.empty:
+        print(f"Experiment {target_exp_id} not found in the file.")
+        # ננסה להציע ניסוי אחר שקיים
+        available = df['exp_ID'].unique()[:5]
+        print(f"Try one of these IDs instead: {available}")
+        return
+
+    # מיון כדי שההדפסה תהיה קריאה: קודם לפי צמח, ואז לפי יום
+    exp_data = exp_data.sort_values(['unique_id', 'day_num'])
+
+    print(f"\n=== Full Data for Experiment {target_exp_id} ===")
+    print(f"Total records: {len(exp_data)}")
+    print(f"Number of plants in experiment: {exp_data['unique_id'].nunique()}")
+
+    # הדפסת הנתונים עצמם.
+    # to_string() מכריח את פייתון להדפיס את כל השורות בלי לקצר
+    print("-" * 80)
+    print(exp_data.to_string(index=False))
+    print("-" * 80)
+
+
+def inspect_specific_day(plant_uid, date_str):
+    print(f"Loading full processed data...")
+    # טוענים את הקובץ המפורט (לא היומי)
+    try:
+        df = pd.read_parquet('tomato_processed_data.parquet')
+    except FileNotFoundError:
+        print("Error: 'tomato_processed_data.parquet' not found.")
+        return
+
+    # המרת זמן
+    if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+
+    print(f"Filtering for plant {plant_uid} on {date_str}...")
+
+    # סינון לפי ID ולפי התאריך
+    # אנחנו ממירים את ה-timestamp לתאריך בלבד (string) כדי להשוות
+    mask = (df['unique_id'] == plant_uid) & \
+           (df['timestamp'].dt.date.astype(str) == date_str)
+
+    specific_day_data = df[mask].sort_values('timestamp')
+
+    if specific_day_data.empty:
+        print("No data found for this specific plant and date.")
+        return
+
+    # בחירת עמודות רלוונטיות להדפסה
+    cols_to_show = ['timestamp', 'unique_id', 's4']  # s4 זה המשקל
+
+    print(f"\n=== Detailed Measurements for {plant_uid} on {date_str} ===")
+    print(f"Total measurements found: {len(specific_day_data)}")
+
+    print("\n--- FIRST 5 MEASUREMENTS (Check Start Weight) ---")
+    print(specific_day_data[cols_to_show].head(5).to_string(index=False))
+
+    print("\n...\n(Middle measurements hidden)\n...")
+
+    print("\n--- LAST 5 MEASUREMENTS (Check End Weight) ---")
+    print(specific_day_data[cols_to_show].tail(5).to_string(index=False))
+
+    # וידוא מול הערכים שראינו בטבלה הקודמת
+    first_weight = specific_day_data['s4'].iloc[0]
+    last_weight = specific_day_data['s4'].iloc[-1]
+
+    print("\n=== VERIFICATION ===")
+    print(f"Actual First Weight found: {first_weight}")
+    print(f"Actual Last Weight found:  {last_weight}")
+###############################
+
 if __name__ == "__main__":
-    main()
+    # הפרמטרים שביקשת לבדוק
+    target_id = "1002_13_3"
+    target_date = "2018-07-06"
+
+    inspect_specific_day(target_id, target_date)
+
+# if __name__ == "__main__":
+#     # טעינה
+#     print("Loading data...")
+#     try:
+#         df = pd.read_parquet('tomato_processed_data.parquet')
+#     except FileNotFoundError:
+#         print("Error: File not found.")
+#         exit()
+#
+#     # המרה לזמן
+#     if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+#         df['timestamp'] = pd.to_datetime(df['timestamp'])
+#
+#     # יצירת הטבלה היומית
+#     daily_summary = create_daily_summary(df)
+#
+#     # הדפסה לבדיקה
+#     print("\n=== Daily Summary Table Head ===")
+#     print(daily_summary.head(10))
+#
+#     print(f"\nTotal daily records: {len(daily_summary)}")
+#
+#     # שמירה לקובץ חדש כפי שביקשת
+#     output_filename = 'tomato_daily_summary_per_plant.parquet'
+#     daily_summary.to_parquet(output_filename)
+#     print(f"Saved daily summary to: {output_filename}")
