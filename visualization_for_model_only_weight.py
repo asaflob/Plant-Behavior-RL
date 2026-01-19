@@ -145,8 +145,8 @@ def load_aggregated_policy(filename):
 
 def plot_normalized_comparison():
     # שמות הקבצים שלך (עם 50 פעולות)
-    file_soil = "q_agent_soil_w10_t2_h10_50.pkl"
-    file_sand = "q_agent_sand_w10_t2_h10_50.pkl"
+    file_soil = "models/q_agent_soil_w10_t2_h10_50.pkl"
+    file_sand = "models/q_agent_sand_w10_t2_h10_50.pkl"
 
     norm_w_soil, act_soil = load_aggregated_policy(file_soil)
     norm_w_sand, act_sand = load_aggregated_policy(file_sand)
