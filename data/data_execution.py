@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from datetime import timedelta
+import os
 
 # הגדרת נתיב לקובץ - שים לב לשנות את זה לנתיב במחשב שלך
 FILE_PATH = 'tomato_raw_data_v2.parquet'
@@ -337,6 +338,149 @@ def inspect_weather_sampling(plant_uid=None, date_str=None, filename='tomato_pro
     print(f"Temp Range: {day_data['wstemp'].min()} - {day_data['wstemp'].max()} C")
     print(f"Avg Humidity: {day_data['wsrh'].mean():.1f} %")
 
+
+def compare_data_versions():
+    # הגדרת נתיבים
+    path_old = os.path.join("tomato_daily_summary_per_plant_with_dt.parquet")
+    path_new = os.path.join("tomato_mdp_ready_with_temp_humidity.parquet")
+
+    # טעינה
+    print(f"Loading OLD file: {path_old}")
+    try:
+        df_old = pd.read_parquet(path_old)
+    except FileNotFoundError:
+        print("Old file not found. Make sure paths are correct.")
+        return
+
+    print(f"Loading NEW file: {path_new}")
+    try:
+        df_new = pd.read_parquet(path_new)
+    except FileNotFoundError:
+        print("New file not found. Did you run the generation script?")
+        return
+
+    # בחירת שורה אקראית מהקובץ החדש כדי לבדוק אותה
+    # אנחנו משתמשים ב-sample כדי לא לקבל תמיד את השורה הראשונה
+    sample_row = df_new.sample(1).iloc[0]
+
+    target_id = sample_row['unique_id']
+    target_date = sample_row['date']
+
+    print(f"\n=== Comparing Record for Plant: {target_id} | Date: {target_date} ===")
+
+    # שליפת השורה המתאימה מהקובץ הישן
+    row_old = df_old[(df_old['unique_id'] == target_id) & (df_old['date'] == target_date)]
+
+    # שליפת השורה (כשורה בודדת) מהקובץ החדש
+    row_new = df_new[(df_new['unique_id'] == target_id) & (df_new['date'] == target_date)]
+
+    if row_old.empty:
+        print("Error: This row exists in NEW file but not in OLD file (maybe data cleaning dropped it?)")
+        return
+
+    # בחירת עמודות משותפות להשוואה + עמודות חדשות
+    common_cols = ['unique_id', 'date', 'start_weight', 'end_weight', 'dt']
+    new_cols = ['avg_temp', 'avg_humidity']
+
+    print("\n--- [OLD FILE] Data ---")
+    print(row_old[common_cols].to_string(index=False))
+
+    print("\n--- [NEW FILE] Data ---")
+    print(row_new[common_cols + new_cols].to_string(index=False))
+
+    # בדיקה לוגית
+    val_old = row_old.iloc[0]['start_weight']
+    val_new = row_new.iloc[0]['start_weight']
+
+    print("\n--- Verification Result ---")
+    if val_old == val_new:  # אפשר להוסיף np.isclose למספרים ממשמשיים אם יש בעיות דיוק
+        print("✅ SUCCESS: Weights match perfectly.")
+    else:
+        print(f"❌ FAILURE: Weights do not match! ({val_old} vs {val_new})")
+
+
+def analyze_raw_intraday_data():
+    # שים לב: אם אתה מריץ מתוך תיקיית הקוד הראשית, והקובץ בתוך data:
+    input_file = os.path.join("tomato_processed_data.parquet")
+
+    print(f"Loading raw data from {input_file}...")
+    try:
+        df = pd.read_parquet(input_file)
+    except FileNotFoundError:
+        print(f"File not found at {input_file}. Check your path.")
+        return
+
+    # המרת זמן
+    if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+
+    # 1. בחירת ניסוי וצמח מייצג
+    # נבחר את הניסוי עם הכי הרבה דאטה
+    exp_counts = df['exp_ID'].value_counts()
+    target_exp = exp_counts.idxmax()
+
+    # נבחר צמח אחד מתוך הניסוי הזה
+    plant_id = df[df['exp_ID'] == target_exp]['unique_id'].iloc[0]
+
+    print(f"\nAnalyzing Raw Data for Plant: {plant_id} (Experiment: {target_exp})")
+
+    # סינון לדאטה של הצמח הזה בלבד
+    plant_df = df[df['unique_id'] == plant_id].copy()
+    plant_df['date'] = plant_df['timestamp'].dt.date
+
+    # ================================================================
+    # 2. מבט על: תנודתיות יומית (Min/Max vs Mean)
+    # ================================================================
+    print("\n=== Daily Volatility Summary (First 10 days) ===")
+    print("This shows how much temp/humidity changes within a single day")
+    print("-" * 85)
+    print(f"{'Date':<12} | {'Temp (Min-Max)':<15} | {'Temp Avg':<10} | {'Humid (Min-Max)':<15} | {'Humid Avg':<10}")
+    print("-" * 85)
+
+    daily_stats = plant_df.groupby('date').agg({
+        'wstemp': ['min', 'max', 'mean'],
+        'wsrh': ['min', 'max', 'mean']
+    })
+
+    # הדפסת 15 הימים הראשונים
+    for date, row in daily_stats.head(15).iterrows():
+        t_min = row[('wstemp', 'min')]
+        t_max = row[('wstemp', 'max')]
+        t_mean = row[('wstemp', 'mean')]
+
+        h_min = row[('wsrh', 'min')]
+        h_max = row[('wsrh', 'max')]
+        h_mean = row[('wsrh', 'mean')]
+
+        print(
+            f"{str(date):<12} | {t_min:.1f} - {t_max:.1f}     | {t_mean:.1f}      | {h_min:.1f} - {h_max:.1f}     | {h_mean:.1f}")
+
+    # ================================================================
+    # 3. זום-אין: יום אחד במלואו (מהלך היום)
+    # ================================================================
+    # נבחר יום מהאמצע
+    unique_dates = plant_df['date'].unique()
+    target_date = unique_dates[len(unique_dates) // 2]
+
+    print(f"\n\n=== Full Day Breakdown: {target_date} ===")
+    print("Displaying measurements every ~30 minutes to understand the trend")
+    print("-" * 60)
+    print(f"{'Time':<10} | {'Temp (°C)':<12} | {'Humidity (%)':<12}")
+    print("-" * 60)
+
+    day_data = plant_df[plant_df['date'] == target_date].sort_values('timestamp')
+
+    # כדי לא להציף את המסך באלפי שורות, נדפיס שורה אחת כל 10 שורות (כל כ-30 דקות)
+    # אבל נשאיר את הרזולוציה המקורית בזיכרון אם תרצה
+    subset = day_data.iloc[::10]
+
+    for _, row in subset.iterrows():
+        time_str = row['timestamp'].strftime('%H:%M')
+        print(f"{time_str:<10} | {row['wstemp']:<12.1f} | {row['wsrh']:<12.1f}")
+
+    print("-" * 60)
+    print(f"Total raw measurements in this day: {len(day_data)}")
+    print(f"Temp Spread: {day_data['wstemp'].max() - day_data['wstemp'].min():.1f}°C")
 ###############################
 def verify_and_update_dt(source_file='tomato_processed_data.parquet',
                          summary_file='tomato_daily_summary_per_plant_with_dt.parquet'):
@@ -440,6 +584,93 @@ def finalize_data_for_mdp():
 
     return final_name
 ###############################
+def generate_daily_summary_with_temp(source_file='tomato_processed_data.parquet',
+                                     output_file='tomato_mdp_ready_with_temp_humidity.parquet'):
+    print(f"--- Loading source data from {source_file} ---")
+    try:
+        df = pd.read_parquet(source_file)
+    except FileNotFoundError:
+        print(f"Error: Source file '{source_file}' not found.")
+        return
+
+    # ==========================================
+    # 1. בדיקת איכות נתונים עבור הטמפרטורה
+    # ==========================================
+    if 'wstemp' not in df.columns:
+        print("CRITICAL ERROR: 'wstemp' column missing!")
+        return
+
+    print("V Column 'wstemp' found.")
+
+    # בדיקת ערכים חסרים
+    missing_temp = df['wstemp'].isna().sum()
+    total_rows = len(df)
+    print(
+        f"Missing 'wstemp' values in raw data: {missing_temp} / {total_rows} ({(missing_temp / total_rows) * 100:.2f}%)")
+
+    # בדיקת טווחים (לראות שאין ערכים משוגעים כמו 200 מעלות או מינוס 50)
+    print(
+        f"Temp Range in raw data: Min={df['wstemp'].min():.2f}, Max={df['wstemp'].max():.2f}, Mean={df['wstemp'].mean():.2f}")
+
+    # ==========================================
+    # 2. יצירת הסיכום היומי (כולל ממוצע טמפ')
+    # ==========================================
+    print("\n--- Aggregating Daily Statistics ---")
+
+    # המרת זמן
+    if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+    df['date'] = df['timestamp'].dt.date
+
+    # קיבוץ
+    daily_group = df.groupby(['unique_id', 'date'])
+
+    daily_df = daily_group.agg({
+        'exp_ID': 'first',
+        's4': ['first', 'last'],  # משקל התחלה וסוף
+        'dt': 'first',  # איבוד מים יומי (כבר נתון יומי)
+        'wstemp': 'mean',  # <--- חישוב ממוצע יומי!
+        'wsrh': 'mean',  # <--- על הדרך, בוא ניקח גם לחות ממוצעת (יעזור בהמשך)
+        'soil_sand': 'first',
+        'timestamp': 'min'
+    }).reset_index()
+
+    # סידור שמות העמודות (Flattening MultiIndex)
+    daily_df.columns = ['unique_id', 'date', 'exp_ID', 'start_weight', 'end_weight',
+                        'dt', 'avg_temp', 'avg_humidity', 'soil_type', 'start_timestamp']
+
+    # חישוב יום בניסוי
+    daily_df = daily_df.sort_values(['unique_id', 'date'])
+    daily_df['day_num'] = daily_df.groupby('unique_id').cumcount() + 1
+
+    # בחירת עמודות סופיות
+    final_df = daily_df[['unique_id', 'exp_ID', 'day_num', 'date',
+                         'start_weight', 'end_weight', 'dt',
+                         'avg_temp', 'avg_humidity', 'soil_type']]
+
+    # ==========================================
+    # 3. ניקוי ושמירה
+    # ==========================================
+    print("\n--- Cleaning Data ---")
+    initial_len = len(final_df)
+
+    # מחיקת שורות שיש בהן NaN באחת מהעמודות הקריטיות
+    # עכשיו גם טמפרטורה היא קריטית
+    final_df = final_df.dropna(subset=['dt', 'start_weight', 'end_weight', 'avg_temp'])
+
+    dropped = initial_len - len(final_df)
+    print(f"Dropped {dropped} rows due to missing data (dt, weight, or temp).")
+    print(f"Final dataset size: {len(final_df)} daily records.")
+
+    # הצצה לנתונים החדשים
+    print("\n--- Sample of New Data (with Temperature) ---")
+    print(final_df[['date', 'start_weight', 'dt', 'avg_temp', 'avg_humidity']].head(10))
+
+    # שמירה
+    print(f"\nSaving to {output_file}...")
+    final_df.to_parquet(output_file)
+    print("Done.")
+
 
 if __name__ == "__main__":
-    finalize_data_for_mdp()
+    analyze_raw_intraday_data()
