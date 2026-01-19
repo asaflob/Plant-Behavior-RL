@@ -14,7 +14,7 @@ def train_plant_agent():
     df = pd.read_parquet(input_file)
 
     # --- סינון לפי סוג קרקע ---
-    target_soil = 'sand' #todo change by the soil we want
+    target_soil = 'soil' #todo change by the soil we want
     print(f"Filtering data for soil type: '{target_soil}'...")
     if 'soil_type' in df.columns:
         df = df[df['soil_type'].astype(str).str.strip() == target_soil]
@@ -34,13 +34,13 @@ def train_plant_agent():
     max_dt = df['dt'].max()
     df['stomatal_opening'] = (df['dt'] - min_dt) / (max_dt - min_dt)
 
-    NUM_ACTIONS = 10
+    NUM_ACTIONS = 100
     df['action_discrete'] = pd.cut(df['stomatal_opening'], bins=NUM_ACTIONS, labels=False)
 
     # ============================================================
     # === תיקון קריטי: עיגול המשקלים לרשת (Grid) של 50 גרם ===
     # ============================================================
-    GRANULARITY = 50
+    GRANULARITY = 5 #todo change the GRANULARITY!!!!!
 
     # הפעולה: מחלקים ב-50, מעגלים למספר השלם הקרוב, ומכפילים חזרה ב-50
     # דוגמה: 2349.15 -> 46.98 -> 47.0 -> 2350.0
@@ -175,7 +175,7 @@ def train_plant_agent():
     # ==============================================================================
     # 6. שמירת המודל (Saving the Agent)
     # ==============================================================================
-    model_filename = f"q_learning_agent_{target_soil}.pkl"
+    model_filename = f"q_learning_agent_{target_soil}_gran_5_action_100.pkl"
     print(f"\nSaving model to {model_filename}...")
 
     model_data = {

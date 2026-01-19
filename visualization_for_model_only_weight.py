@@ -42,8 +42,8 @@ def load_normalized_policy(filename):
 
 def plot_normalized_comparison():
     # 1. טעינת הנתונים
-    norm_w_soil, act_soil = load_normalized_policy("q_learning_agent_soil.pkl")
-    norm_w_sand, act_sand = load_normalized_policy("q_learning_agent_sand.pkl")
+    norm_w_soil, act_soil = load_normalized_policy("q_learning_agent_soil_gran_5_action_100.pkl")
+    norm_w_sand, act_sand = load_normalized_policy("q_learning_agent_sand_gran_5_action_100.pkl")
 
     if norm_w_soil is None or norm_w_sand is None:
         print("Error: Missing model files.")
