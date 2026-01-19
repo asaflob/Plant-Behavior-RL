@@ -91,44 +91,39 @@ class PlantMDP:
         ])
         obs_df.to_parquet(f"{folder}/observations.parquet")
 
+    def print_occupancy_stats(self):
+        """
+        Prints how many bins are used and how many total states were actually visited.
+        """
+        # 1. Theoretical calculations
+        theoretical_bins = {}
+        total_theoretical = 1
+        for col, config in self.state_map.items():
+            l, u, s = config['bounds'][0], config['bounds'][1], config['granularity']
+            bins = len(np.arange(l, u + s, s))
+            theoretical_bins[col] = bins
+            total_theoretical *= bins
 
-# ======================================== Plant Instance ======================================== #
+        # 2. Count observed (filled) unique states
+        # self.transitions.keys() contains every state that appeared as 'curr_s'
+        observed_states = set(self.transitions.keys())
 
-    # --- 1. Define your Configuration ---
+        # 3. Count unique bins filled per column
+        # We use a set comprehension to find unique values in each dimension of observed states
+        filled_bins_per_col = {}
+        for i, col_name in enumerate(self.state_cols):
+            unique_values_visited = set(state[i] for state in observed_states)
+            filled_bins_per_col[col_name] = len(unique_values_visited)
 
-    # State is JUST weight.
-    # We want to track weights from 50g to 1000g in 10g increments.
-    # plant_state_map = {
-    #     'plant_weight': {'bounds': (50, 1000), 'granularity': 10}
-    # }
-    #
-    # # The column in your parquet that represents Water Loss
-    # action_column = 'water_loss'
-    #
-    # # --- 2. Initialize and Run ---
-    #
-    # # Assumes you have a 'plant_data.parquet' with columns: ['plant_weight', 'water_loss']
-    # plant_mdp = PlantMDP(
-    #     data_path="plant_data.parquet",
-    #     state_map=plant_state_map,
-    #     action_col=action_column
-    # )
-    #
-    # # Process the large table
-    # plant_mdp.process_data()
-    #
-    # # --- 3. Analyze the Results ---
-    #
-    # # Let's see how it handled the variation you mentioned:
-    # print(f"Total States explored: {len(plant_mdp.transitions)}")
-    #
-    # # Example: Inspecting a specific weight and water loss
-    # sample_s = (500.0,)  # Plant weighs 500g
-    # sample_a = 30.0  # It lost 30g of water
-    # expected_g = plant_mdp.expected_rewards.get(str((sample_s, sample_a)), 0)
-    #
-    # print(f"For weight {sample_s} and water loss {sample_a}:")
-    # print(f"Average growth (Expected Reward): {expected_g}g")
-    #
-    # # Save the model
-    # plant_mdp.save("plant_growth_model")
+        # --- Print Results ---
+        print("--- Bin Occupancy ---")
+        for col in self.state_cols:
+            filled = filled_bins_per_col[col]
+            total = theoretical_bins[col]
+            print(f"{col}: {filled}/{total} bins filled ({filled / total:.1%})")
+
+        print("\n--- Total State Occupancy ---")
+        visited = len(observed_states)
+        print(f"Total States Visited: {visited:,}")
+        print(f"Total States Possible: {total_theoretical:,}")
+        print(f"Space Sparsity: {visited / total_theoretical:.4%}")
