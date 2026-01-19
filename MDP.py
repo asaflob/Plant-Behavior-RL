@@ -98,37 +98,37 @@ class PlantMDP:
 
     # State is JUST weight.
     # We want to track weights from 50g to 1000g in 10g increments.
-    plant_state_map = {
-        'plant_weight': {'bounds': (50, 1000), 'granularity': 10}
-    }
-
-    # The column in your parquet that represents Water Loss
-    action_column = 'water_loss'
-
-    # --- 2. Initialize and Run ---
-
-    # Assumes you have a 'plant_data.parquet' with columns: ['plant_weight', 'water_loss']
-    plant_mdp = PlantMDP(
-        data_path="plant_data.parquet",
-        state_map=plant_state_map,
-        action_col=action_column
-    )
-
-    # Process the large table
-    plant_mdp.process_data()
-
-    # --- 3. Analyze the Results ---
-
-    # Let's see how it handled the variation you mentioned:
-    print(f"Total States explored: {len(plant_mdp.transitions)}")
-
-    # Example: Inspecting a specific weight and water loss
-    sample_s = (500.0,)  # Plant weighs 500g
-    sample_a = 30.0  # It lost 30g of water
-    expected_g = plant_mdp.expected_rewards.get(str((sample_s, sample_a)), 0)
-
-    print(f"For weight {sample_s} and water loss {sample_a}:")
-    print(f"Average growth (Expected Reward): {expected_g}g")
-
-    # Save the model
-    plant_mdp.save("plant_growth_model")
+    # plant_state_map = {
+    #     'plant_weight': {'bounds': (50, 1000), 'granularity': 10}
+    # }
+    #
+    # # The column in your parquet that represents Water Loss
+    # action_column = 'water_loss'
+    #
+    # # --- 2. Initialize and Run ---
+    #
+    # # Assumes you have a 'plant_data.parquet' with columns: ['plant_weight', 'water_loss']
+    # plant_mdp = PlantMDP(
+    #     data_path="plant_data.parquet",
+    #     state_map=plant_state_map,
+    #     action_col=action_column
+    # )
+    #
+    # # Process the large table
+    # plant_mdp.process_data()
+    #
+    # # --- 3. Analyze the Results ---
+    #
+    # # Let's see how it handled the variation you mentioned:
+    # print(f"Total States explored: {len(plant_mdp.transitions)}")
+    #
+    # # Example: Inspecting a specific weight and water loss
+    # sample_s = (500.0,)  # Plant weighs 500g
+    # sample_a = 30.0  # It lost 30g of water
+    # expected_g = plant_mdp.expected_rewards.get(str((sample_s, sample_a)), 0)
+    #
+    # print(f"For weight {sample_s} and water loss {sample_a}:")
+    # print(f"Average growth (Expected Reward): {expected_g}g")
+    #
+    # # Save the model
+    # plant_mdp.save("plant_growth_model")
