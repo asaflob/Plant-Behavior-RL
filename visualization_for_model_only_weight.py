@@ -10,15 +10,6 @@ from collections import defaultdict
 # שנה את המספר הזה בהתאם למספר ה-Actions שהגדרת באימון!
 TOTAL_ACTIONS = 50
 
-MODELS_TO_VISUALIZE = (
-    "w1",
-    "w5",
-    "w5_a100",
-    "w5_t1_h10",
-    "w10_h10_a50",
-    "w50",
-)
-
 def load_aggregated_policy(filename):
     """
     טוען את המודל, ומחשב את 'הפעולה הממוצעת' לכל משקל
@@ -62,10 +53,10 @@ def load_aggregated_policy(filename):
     return normalized_weights, avg_actions
 
 
-def plot_normalized_comparison(model):
+def plot_normalized_comparison():
     # שמות הקבצים שלך (עם 50 פעולות)
-    file_soil = f"models/{model}/soil.pkl"
-    file_sand = f"models/{model}/sand.pkl"
+    file_soil = "q_agent_soil_w5_t2_h10_actions_50.pkl"
+    file_sand = "q_agent_sand_w5_t2_h10_actions_50.pkl"
 
     norm_w_soil, act_soil = load_aggregated_policy(file_soil)
     norm_w_sand, act_sand = load_aggregated_policy(file_sand)
@@ -103,11 +94,8 @@ def plot_normalized_comparison(model):
     plt.ylim(-0.5, TOTAL_ACTIONS + 0.5)
 
     plt.tight_layout()
-    plot = plt
-    plot.savefig(f"models/{model}/{model}.png")
-    plot.show()
+    plt.show()
 
 
 if __name__ == "__main__":
-    for model in MODELS_TO_VISUALIZE:
-        plot_normalized_comparison(model)
+    plot_normalized_comparison()
