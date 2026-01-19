@@ -1,6 +1,6 @@
 {
     "input_file": "data/tomato_daily_summary_per_plant_with_dt.parquet",
-    "output_path": "plant_models",
+    "output_path": "models/temp",
     "soil_types": ["sand", "soil"],
     "num_actions": 10,
     "episodes": 10000,

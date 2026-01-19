@@ -128,7 +128,7 @@ class PlantGrowthTrainer:
         }
 
         os.makedirs(self.output_path, exist_ok=True)
-        path = os.path.join(self.output_path, f"q_agent_{soil_type}.pkl")
+        path = os.path.join(self.output_path, soil_type)
         with open(path, "wb") as f:
             pickle.dump(save_dict, f)
         print(f"Saved: {path}")
