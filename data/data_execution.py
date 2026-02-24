@@ -585,7 +585,7 @@ def finalize_data_for_mdp():
     return final_name
 ###############################
 def generate_daily_summary_with_temp(source_file='tomato_processed_data.parquet',
-                                     output_file='tomato_mdp_ready_with_temp_humidity.parquet'):
+                                     output_file='tomato_mdp_ready_with_temp_humidity_light.parquet'):
     print(f"--- Loading source data from {source_file} ---")
     try:
         df = pd.read_parquet(source_file)
@@ -596,11 +596,32 @@ def generate_daily_summary_with_temp(source_file='tomato_processed_data.parquet'
     # ==========================================
     # 1. בדיקת איכות נתונים עבור הטמפרטורה
     # ==========================================
-    if 'wstemp' not in df.columns:
-        print("CRITICAL ERROR: 'wstemp' column missing!")
-        return
+    required_cols = ['wstemp', 'wspar', 'wsrh', 's4', 'dt']
+    for col in required_cols:
+        if col not in df.columns:
+            print(f"CRITICAL ERROR: Column '{col}' missing!")
+            return
 
-    print("V Column 'wstemp' found.")
+    # ==============================================================================
+    # 2. ניקוי קרינה (PAR) לפי הנחיית הדוקטורנטית
+    # ==============================================================================
+    print("\n--- Cleaning PAR (wspar) Data ---")
+    initial_rows = len(df)
+
+    # א. טיפול ב"מינוס אפס": ערכים מזעריים שנובעים מחישוב נקודה צפה יהפכו ל-0
+    # נניח שכל מה שבין -0.001 ל-0 הוא בעצם 0
+    mask_neg_zero = (df['wspar'] > -0.001) & (df['wspar'] < 0)
+    corrected_zeros = mask_neg_zero.sum()
+    df.loc[mask_neg_zero, 'wspar'] = 0.0
+    print(f"Corrected {corrected_zeros} values from '-0' to '0'.")
+
+    # ב. מחיקת שליליים אמיתיים (שגיאות אינטרפולציה)
+    # משאירים רק מה שגדול או שווה לאפס
+    df = df[df['wspar'] >= 0].copy()
+
+    dropped_neg_par = initial_rows - len(df)
+    print(f"Dropped {dropped_neg_par} rows containing negative PAR (interpolation errors).")
+    print(f"Remaining rows: {len(df)}")
 
     # בדיקת ערכים חסרים
     missing_temp = df['wstemp'].isna().sum()
@@ -627,17 +648,19 @@ def generate_daily_summary_with_temp(source_file='tomato_processed_data.parquet'
 
     daily_df = daily_group.agg({
         'exp_ID': 'first',
-        's4': ['first', 'last'],  # משקל התחלה וסוף
-        'dt': 'first',  # איבוד מים יומי (כבר נתון יומי)
-        'wstemp': 'mean',  # <--- חישוב ממוצע יומי!
-        'wsrh': 'mean',  # <--- על הדרך, בוא ניקח גם לחות ממוצעת (יעזור בהמשך)
+        's4': ['first', 'last'],
+        'dt': 'first',
+        'wstemp': 'mean',  # ממוצע טמפ'
+        'wsrh': 'mean',  # ממוצע לחות
+        'wspar': 'mean',  # ממוצע קרינה (אחרי הסינון)
         'soil_sand': 'first',
         'timestamp': 'min'
     }).reset_index()
 
-    # סידור שמות העמודות (Flattening MultiIndex)
+    # סידור שמות העמודות
     daily_df.columns = ['unique_id', 'date', 'exp_ID', 'start_weight', 'end_weight',
-                        'dt', 'avg_temp', 'avg_humidity', 'soil_type', 'start_timestamp']
+                        'dt', 'avg_temp', 'avg_humidity', 'avg_par',
+                        'soil_type', 'start_timestamp']
 
     # חישוב יום בניסוי
     daily_df = daily_df.sort_values(['unique_id', 'date'])
@@ -646,31 +669,204 @@ def generate_daily_summary_with_temp(source_file='tomato_processed_data.parquet'
     # בחירת עמודות סופיות
     final_df = daily_df[['unique_id', 'exp_ID', 'day_num', 'date',
                          'start_weight', 'end_weight', 'dt',
-                         'avg_temp', 'avg_humidity', 'soil_type']]
+                         'avg_temp', 'avg_humidity', 'avg_par',
+                         'soil_type']]
+
+    # daily_df = daily_group.agg({
+    #     'exp_ID': 'first',
+    #     's4': ['first', 'last'],  # משקל התחלה וסוף
+    #     'dt': 'first',  # איבוד מים יומי (כבר נתון יומי)
+    #     'wstemp': 'mean',  # <--- חישוב ממוצע יומי!
+    #     'wsrh': 'mean',  # <--- על הדרך, בוא ניקח גם לחות ממוצעת (יעזור בהמשך)
+    #     'soil_sand': 'first',
+    #     'timestamp': 'min'
+    # }).reset_index()
+
+    # # סידור שמות העמודות (Flattening MultiIndex)
+    # daily_df.columns = ['unique_id', 'date', 'exp_ID', 'start_weight', 'end_weight',
+    #                     'dt', 'avg_temp', 'avg_humidity', 'soil_type', 'start_timestamp']
+    #
+    # # חישוב יום בניסוי
+    # daily_df = daily_df.sort_values(['unique_id', 'date'])
+    # daily_df['day_num'] = daily_df.groupby('unique_id').cumcount() + 1
+    #
+    # # בחירת עמודות סופיות
+    # final_df = daily_df[['unique_id', 'exp_ID', 'day_num', 'date',
+    #                      'start_weight', 'end_weight', 'dt',
+    #                      'avg_temp', 'avg_humidity', 'soil_type']]
 
     # ==========================================
     # 3. ניקוי ושמירה
     # ==========================================
-    print("\n--- Cleaning Data ---")
+    print("\n--- Cleaning Missing Data (Daily Level) ---")
     initial_len = len(final_df)
 
-    # מחיקת שורות שיש בהן NaN באחת מהעמודות הקריטיות
-    # עכשיו גם טמפרטורה היא קריטית
-    final_df = final_df.dropna(subset=['dt', 'start_weight', 'end_weight', 'avg_temp'])
+    # מחיקת שורות שיש בהן NaN באחד הפרמטרים החשובים
+    final_df = final_df.dropna(subset=['dt', 'start_weight', 'end_weight', 'avg_temp', 'avg_par'])
 
     dropped = initial_len - len(final_df)
-    print(f"Dropped {dropped} rows due to missing data (dt, weight, or temp).")
+    print(f"Dropped {dropped} daily records due to missing data.")
     print(f"Final dataset size: {len(final_df)} daily records.")
 
-    # הצצה לנתונים החדשים
-    print("\n--- Sample of New Data (with Temperature) ---")
-    print(final_df[['date', 'start_weight', 'dt', 'avg_temp', 'avg_humidity']].head(10))
-
-    # שמירה
     print(f"\nSaving to {output_file}...")
     final_df.to_parquet(output_file)
     print("Done.")
 
+    # print("\n--- Cleaning Data ---")
+    # initial_len = len(final_df)
+    #
+    # # מחיקת שורות שיש בהן NaN באחת מהעמודות הקריטיות
+    # # עכשיו גם טמפרטורה היא קריטית
+    # final_df = final_df.dropna(subset=['dt', 'start_weight', 'end_weight', 'avg_temp'])
+    #
+    # dropped = initial_len - len(final_df)
+    # print(f"Dropped {dropped} rows due to missing data (dt, weight, or temp).")
+    # print(f"Final dataset size: {len(final_df)} daily records.")
+    #
+    # # הצצה לנתונים החדשים
+    # print("\n--- Sample of New Data (with Temperature) ---")
+    # print(final_df[['date', 'start_weight', 'dt', 'avg_temp', 'avg_humidity']].head(10))
+    #
+    # # שמירה
+    # print(f"\nSaving to {output_file}...")
+    # final_df.to_parquet(output_file)
+    # print("Done.")
+
+###############################
+def create_filtered_mdp_file(source_file, output_file, threshold=800):
+    """
+    Reads the source file, filters out rows with 'dt' >= threshold,
+    and saves the result to a NEW output file.
+    """
+    print(f"\n=== Creating Filtered Copy (dt < {threshold}) ===")
+    print(f"Source: {source_file}")
+    print(f"Target: {output_file}")
+
+    # 1. בדיקת קיום קובץ המקור
+    if not os.path.exists(source_file):
+        print(f"Error: Source file '{source_file}' not found.")
+        return
+
+    # 2. טעינת הנתונים
+    df = pd.read_parquet(source_file)
+
+    # 3. בדיקת תקינות עמודות
+    if 'dt' not in df.columns:
+        print("Error: 'dt' column missing in source file.")
+        return
+
+    initial_count = len(df)
+
+    # 4. ביצוע הסינון
+    # שומרים רק שורות שבהן dt קטן מהסף (קטן ממש, לא שווה)
+    df_clean = df[df['dt'] < threshold].copy()
+
+    # 5. חישוב סטטיסטיקות והדפסה
+    dropped_count = initial_count - len(df_clean)
+    if initial_count > 0:
+        percent_dropped = (dropped_count / initial_count) * 100
+    else:
+        percent_dropped = 0
+
+    print(f"Original rows: {initial_count}")
+    print(f"Rows dropped: {dropped_count} ({percent_dropped:.2f}%)")
+    print(f"Final rows: {len(df_clean)}")
+
+    if not df_clean.empty:
+        print(f"Max dt in new file: {df_clean['dt'].max()}")
+
+    # 6. שמירה לקובץ החדש
+    df_clean.to_parquet(output_file)
+    print(f"✅ Successfully saved filtered data to: {output_file}")
+###############################בדיקות עם פרמטר wspar
+
+def analyze_wspar_behavior(filename='tomato_processed_data.parquet'):
+    print(f"\n=== Analyzing 'wspar' (Light/PAR) Behavior in {filename} ===")
+
+    if not os.path.exists(filename):
+        print(f"Error: File {filename} not found.")
+        return
+
+    df = pd.read_parquet(filename)
+
+    if 'wspar' not in df.columns:
+        print("Error: 'wspar' column not found.")
+        return
+
+    # מסננים NaN רק לצורך הבדיקה
+    wspar_data = df['wspar'].dropna()
+
+    # 1. סטטיסטיקה בסיסית
+    print("\n1. Basic Statistics:")
+    print(f"Min: {wspar_data.min():.2f}")
+    print(f"Max: {wspar_data.max():.2f}")
+    print(f"Mean: {wspar_data.mean():.2f}")
+    print(f"Median: {wspar_data.median():.2f}")
+
+    # 2. בדיקת לילה (כמה אפסים יש?)
+    zeros = (wspar_data == 0).sum()
+    total = len(wspar_data)
+    print(f"\n2. Night/Day Distribution:")
+    print(f"Zero values (Night): {zeros} ({zeros / total:.1%})")
+    print(f"Active values (>0): {total - zeros} ({(total - zeros) / total:.1%})")
+
+    # בדיקת התפלגות הערכים הפעילים (ביום)
+    day_data = wspar_data[wspar_data > 10]  # מסננים רעש קטן
+    if not day_data.empty:
+        print(f"Avg value during DAY (>10): {day_data.mean():.2f}")
+        print(f"25th Percentile (Day): {day_data.quantile(0.25):.2f}")
+        print(f"75th Percentile (Day): {day_data.quantile(0.75):.2f}")
+
+    # 3. בדיקת "קפיצות" (Rate of Change)
+    # זה קריטי כדי להחליט על ה-Granularity של ה-MDP
+    # אנחנו בודקים מה ההפרש הממוצע בין דגימה לדגימה (כל 3 דקות)
+    diffs = day_data.diff().abs()
+    print("\n3. Volatility (Changes between 3-min samples during Day):")
+    print(f"Average jump: {diffs.mean():.2f}")
+    print(f"Max jump: {diffs.max():.2f}")
+    print("Recommendation: Your MDP granularity should be larger than the Average Jump.")
+
+    # 4. התנהגות לפי שעה (כדי לראות את הפעמון)
+    print("\n4. Average wspar by Hour of Day:")
+    # המרת זמן
+    if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+
+    hourly = df.groupby(df['timestamp'].dt.hour)['wspar'].mean()
+
+    # הדפסה יפה של טבלה
+    print(f"{'Hour':<5} | {'Avg PAR':<10}")
+    print("-" * 18)
+    for hour, val in hourly.items():
+        # מדפיסים רק שעות זוגיות כדי לחסוך מקום, או הכל
+        print(f"{hour:<5} | {val:<10.1f}")
+
+
 
 if __name__ == "__main__":
-    analyze_raw_intraday_data()
+    intermediate_file = 'tomato_mdp_ready_with_temp_humidity_light.parquet'
+
+    print(">>> STEP 1: Generating Daily Summary with PAR...")
+    generate_daily_summary_with_temp(
+        source_file='tomato_processed_data.parquet',
+        output_file=intermediate_file
+    )
+
+    # --- שלב 2: סינון ערכי טרנספירציה גבוהים (dt < 800) ---
+    # אנחנו לוקחים את הקובץ שיצרנו בשלב 1, ומייצרים ממנו את הקובץ הסופי לאימון
+    final_training_file = 'tomato_mdp_final_filtered.parquet'
+
+    print("\n>>> STEP 2: Filtering High Transpiration (dt < 800)...")
+    create_filtered_mdp_file(
+        source_file=intermediate_file,
+        output_file=final_training_file,
+        threshold=800
+    )
+
+    print(f"\n✅ PIPELINE COMPLETE.")
+    print(f"The file ready for the Agent is: {final_training_file}")
+
+    # analyze_wspar_behavior('tomato_processed_data.parquet')
+    # original_file = os.path.join("tomato_mdp_ready_with_temp_humidity.parquet")
+    # filtered_file = os.path.join("tomato_mdp_filtered_dt800_ready.parquet")
+    # create_filtered_mdp_file(original_file, filtered_file, threshold=800)
