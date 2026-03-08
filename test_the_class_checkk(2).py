@@ -4,7 +4,7 @@ import os
 from MDP import PlantMDP
 import pickle
 import matplotlib.pyplot as plt  # <--- הוספנו את ספריית הציור
-
+from q_learning_algo import q_learning
 
 def train_plant_agent():
     # ==============================================================================
@@ -16,7 +16,7 @@ def train_plant_agent():
     GRANULARITY_HUMID = 10
     GRANULARITY_PAR = 100
 
-    NUM_ACTIONS = 10
+    NUM_ACTIONS = 50
 
     # שם הקובץ הסופי שיצרנו ב-Pipeline
     input_file = os.path.join("data", "tomato_mdp_final_filtered.parquet")
@@ -85,10 +85,10 @@ def train_plant_agent():
             'bounds': (df['avg_humidity'].min(), df['avg_humidity'].max()),
             'granularity': GRANULARITY_HUMID
         },
-        'avg_par': {
-            'bounds': (df['avg_par'].min(), df['avg_par'].max()),
-            'granularity': GRANULARITY_PAR
-        }
+        # 'avg_par': {
+        #     'bounds': (df['avg_par'].min(), df['avg_par'].max()),
+        #     'granularity': GRANULARITY_PAR
+        # }
     }
 
     mdp_model = PlantMDP(
@@ -122,76 +122,18 @@ def train_plant_agent():
         return next_state, reward
 
     # ==============================================================================
-    # 4. הרצת Q-Learning
+    # Q-Learning
     # ==============================================================================
-    print(f"\nStarting Q-Learning Training for {target_soil}...")
+    print(f"\nStarting Q-Learning Execution for {target_soil}...")
 
-    ACTIONS = list(range(NUM_ACTIONS))
-    Q_table = {s: {a: 0.0 for a in ACTIONS} for s in mdp_model.states}
-
-    ALPHA = 0.1
-    GAMMA = 0.95
-    EPSILON = 1.0
-    EPSILON_MIN = 0.01
-    DECAY = 0.9995
-
-    MAX_EPISODES = 100000
-    TOLERANCE = 1e-4
-    CONSECUTIVE_EPISODES = 10
-    converged_count = 0
-
-    # <--- חדש: רשימה לשמירת היסטוריית ההתכנסות --->
-    convergence_history = []
-
-    for episode in range(MAX_EPISODES):
-        possible_starts = [s for s in mdp_model.states if s[0] < 250]
-        possible_starts = [s for s in possible_starts if s in mdp_model.transitions]
-
-        if not possible_starts:
-            possible_starts = list(mdp_model.transitions.keys())
-
-        current_state = possible_starts[np.random.choice(len(possible_starts))]
-        max_change_this_episode = 0.0
-
-        for _ in range(60):
-            if np.random.random() < EPSILON:
-                action = np.random.choice(ACTIONS)
-            else:
-                action = max(Q_table[current_state], key=Q_table[current_state].get)
-
-            next_state, reward = get_env_step(current_state, action)
-
-            max_future_q = max(Q_table[next_state].values()) if next_state in Q_table else 0
-            current_q = Q_table[current_state][action]
-            new_q = current_q + ALPHA * (reward + GAMMA * max_future_q - current_q)
-
-            change = abs(new_q - current_q)
-            if change > max_change_this_episode:
-                max_change_this_episode = change
-
-            Q_table[current_state][action] = new_q
-            current_state = next_state
-
-        # שמירת השינוי המקסימלי של האפיזודה הזו לטובת הגרף
-        convergence_history.append(max_change_this_episode)
-
-        if EPSILON > EPSILON_MIN:
-            EPSILON *= DECAY
-
-        if max_change_this_episode < TOLERANCE:
-            converged_count += 1
-        else:
-            converged_count = 0
-
-        if converged_count >= CONSECUTIVE_EPISODES:
-            print(f"Algorithm converged successfully at episode {episode}!")
-            break
-
-        if episode % 5000 == 0:
-            print(
-                f"Episode {episode}/{MAX_EPISODES} | Epsilon: {EPSILON:.4f}| Max Change: {max_change_this_episode:.6f}")
-
-    print("Training Finished.")
+    THRESHOLD = 1e-4
+    # קריאה לפונקציה המבודדת מתוך הקובץ q_learning_algo.py
+    Q_table, convergence_history = q_learning(
+        mdp_model=mdp_model,
+        env_step_func=get_env_step,
+        num_actions=NUM_ACTIONS,
+        threshold = THRESHOLD
+    )
 
     if os.path.exists(temp_file):
         os.remove(temp_file)
@@ -200,17 +142,50 @@ def train_plant_agent():
     # 5. יצירת גרף התכנסות (Convergence Plot)
     # ==============================================================================
     print("Generating convergence plot...")
+
+    # plt.figure(figsize=(12, 6))
+    #
+    # window_size = 100
+    # smoothed_history = pd.Series(convergence_history).rolling(window=window_size, min_periods=1).mean()
+    #
+    # # 1. מציירים את הנתונים הגולמיים אבל חלש חלש ברקע (כדי שיראו שיש רעש)
+    # plt.plot(convergence_history, color='cornflowerblue', alpha=0.2, label='Raw Delta (Noisy)')
+    #
+    # # 2. מציירים את הממוצע הנע - קו כהה, עבה וברור!
+    # plt.plot(smoothed_history, color='navy', linewidth=2, label=f'Moving Average ({window_size} episodes)')
+    #
+    # # קו אדום מקווקו המייצג את סף ההתכנסות שלנו
+    # plt.axhline(y=THRESHOLD, color='red', linestyle='--', linewidth=2, label=f'Convergence Threshold ({THRESHOLD})')
+    #
+    # plt.title(f'Q-Learning Convergence for {target_soil} Soil', fontsize=16)
+    # plt.xlabel('Episodes', fontsize=14)
+    # plt.ylabel('Max Delta in Q-values', fontsize=14)
+    #
+    # # אפשר לחזור לסקאלה רגילה אם הממוצע הנע מחליק את זה מספיק,
+    # # או להשאיר את ה-symlog אם זה עדיין קופצני. ננסה symlog עדין:
+    # plt.yscale('symlog', linthresh=THRESHOLD)
+    #
+    # plt.grid(True, which="both", ls="--", alpha=0.5)
+    # plt.legend()
+    #
+    # # שמירת הגרף כתמונה
+    # plot_filename = f"convergence_plot_{target_soil}_smoothed.png"
+    # plt.savefig(plot_filename, dpi=300)
+    # print(f"Plot saved as {plot_filename}")
+
     plt.figure(figsize=(10, 6))
 
     # ציור ההיסטוריה בסקאלה רגילה (ליניארית)
     plt.plot(convergence_history, color='blue', alpha=0.5, label='Max Q-value Change (Delta)')
 
     # קו אדום מקווקו המייצג את סף ההתכנסות שלנו
-    plt.axhline(y=TOLERANCE, color='red', linestyle='--', label=f'Convergence Threshold ({TOLERANCE})')
+    plt.axhline(y=THRESHOLD, color='red', linestyle='--', label=f'Convergence Threshold ({THRESHOLD})')
 
     plt.title(f'Q-Learning Convergence for {target_soil} Soil', fontsize=14)
-    plt.xlabel('Episodes', fontsize=12)
+    plt.xlabel('iteration', fontsize=12)
     plt.ylabel('Max Delta (Change) in Q-values', fontsize=12)
+
+    # plt.yscale('symlog', linthresh=THRESHOLD)
 
     plt.grid(True, which="both", ls="--", alpha=0.5)
     plt.legend()
@@ -230,6 +205,7 @@ def train_plant_agent():
     model_data = {
         "q_table": Q_table,
         "soil_type": target_soil,
+        "num_actions": NUM_ACTIONS,
         "granularities": {
             "weight": GRANULARITY_WEIGHT,
             "temp": GRANULARITY_TEMP,

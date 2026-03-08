@@ -361,8 +361,9 @@ def analyze_experiment_prediction_final():
     has_par = 'par' in gran
     print(f"Agent Config -> Granularities: {gran}, Has PAR: {has_par}")
 
-    max_act_in_policy = max(policy.values())
-    NUM_ACTIONS = max_act_in_policy + 1
+    # max_act_in_policy = max(policy.values())
+    # NUM_ACTIONS = max_act_in_policy + 1
+    NUM_ACTIONS = agent_data['num_actions']
 
     # טעינת הדאטה
     print("Loading Data...")
