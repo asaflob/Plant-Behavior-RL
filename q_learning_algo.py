@@ -51,7 +51,7 @@ def q_learning(mdp_model, env_step_func, num_actions,max_iterations=100000,
             # מעקב אחר ההתכנסות (השינוי המקסימלי)
             change = abs(new_q - current_q)
             if change > max_change_this_iteration:
-                max_change_this_episode = change
+                max_change_this_iteration = change
 
             # עדכון הטבלה והתקדמות
             q_table[current_state][action] = new_q
