@@ -27,7 +27,7 @@ def q_learning(mdp_model, env_step_func, num_actions,max_iterations=100000,
         current_state = possible_starts[np.random.choice(len(possible_starts))]
         max_change_this_iteration = 0.0
 
-        # דעיכת קצב הלמידה (Alpha)
+        # דעיכת קצב הלמידה (alpha)
         current_alpha = max(0.01, alpha * (0.9999 ** iteration))
 
         #  לולאת הצעדים בתוך איטרציה, כל ניסוי נמשך בין 3 ל-4 שבועות
@@ -38,10 +38,10 @@ def q_learning(mdp_model, env_step_func, num_actions,max_iterations=100000,
             else:
                 action = max(q_table[current_state], key=q_table[current_state].get)
 
-            # 2. ביצוע הפעולה מול הסביבה
+            # ביצוע הפעולה מול הסביבה
             next_state, reward = env_step_func(current_state, action)
 
-            # 3. יישום משוואת בלמן
+            #  יישום משוואת בלמן
             max_future_q = max(q_table[next_state].values()) if next_state in q_table else 0
             current_q = q_table[current_state][action]
 

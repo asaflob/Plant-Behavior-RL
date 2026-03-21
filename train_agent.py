@@ -53,6 +53,7 @@ def train_plant_agent():
     min_dt = df['dt'].min()
     max_dt = df['dt'].max()
 
+
     df['stomatal_opening'] = (df['dt'] - min_dt) / (max_dt - min_dt)
     df['action_discrete'] = pd.cut(df['stomatal_opening'], bins=NUM_ACTIONS, labels=False)
 
@@ -60,9 +61,65 @@ def train_plant_agent():
     # === תהליך הדיסקרטיזציה (Discretization / Rounding) ===
     # ============================================================
     print("Rounding data to grid...")
-
     df['start_weight'] = (df['start_weight'] / GRANULARITY_WEIGHT).round() * GRANULARITY_WEIGHT
     df['end_weight'] = (df['end_weight'] / GRANULARITY_WEIGHT).round() * GRANULARITY_WEIGHT
+    df['avg_temp'] = (df['avg_temp'] / GRANULARITY_TEMP).round() * GRANULARITY_TEMP
+    df['avg_humidity'] = (df['avg_humidity'] / GRANULARITY_HUMID).round() * GRANULARITY_HUMID
+    df['avg_par'] = (df['avg_par'] / GRANULARITY_PAR).round() * GRANULARITY_PAR
+
+    # ============================================================
+    # === Normalization + K-Means ===
+    # ============================================================
+
+    print("Normalizing data and applying K-Means...")
+
+    # א. הגדרת העמודות שמרכיבות את המצב
+    state_cols = ['start_weight', 'avg_temp', 'avg_humidity', 'avg_par']
+
+    # ב. נרמול
+    scaler = MinMaxScaler()
+    df_normalized = pd.DataFrame(scaler.fit_transform(df[state_cols]), columns=state_cols)
+
+    ###########################################
+    print("Generating Elbow Method plot to justify the number of states...")
+    k_values_to_test = [100, 300, 500, 1000, 1500, 2000, 2500, 3000]
+    inertias = []
+
+    # בודקים כמה "טעות" יש בכל בחירה של מספר מצבים
+    for k in k_values_to_test:
+        temp_kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
+        temp_kmeans.fit(df_normalized)
+        inertias.append(temp_kmeans.inertia_)#todo understand the meaning here
+
+    # מציירים את הגרף ושומרים אותו
+    plt.figure(figsize=(10, 6))
+    plt.plot(k_values_to_test, inertias, marker='o', linestyle='-', color='purple', linewidth=2)
+    plt.title(f'Elbow Method For Optimal States (Soil: {target_soil})', fontsize=14)
+    plt.xlabel('Number of States (K)', fontsize=12)
+    plt.ylabel('Inertia (Error / Distances)', fontsize=12)
+    plt.grid(True, linestyle='--', alpha=0.7)
+
+    elbow_plot_filename = f"elbow_method_{target_soil}.png"
+    plt.savefig(elbow_plot_filename, dpi=300)
+    print(f"Saved Elbow plot as '{elbow_plot_filename}'. Look at this image to find the optimal NUM_STATES!")
+    plt.close()
+    ###########################################
+
+    # ג. K-Means
+    NUM_STATES = 1000
+    kmeans = KMeans(n_clusters=NUM_STATES, random_state=42, n_init=10)
+
+    # מקבלים לאיזה אשכול שייכת כל שורה
+    cluster_labels = kmeans.fit_predict(df_normalized)
+    centroids_real = scaler.inverse_transform(kmeans.cluster_centers_)
+
+    df[state_cols] = centroids_real[cluster_labels]
+
+    # ============================================================
+    # הפתרון שלך: "Snap to Grid" של מרכזי הכובד
+    # ============================================================
+    print("Snapping K-Means centroids back to the original grid...")
+    df['start_weight'] = (df['start_weight'] / GRANULARITY_WEIGHT).round() * GRANULARITY_WEIGHT
     df['avg_temp'] = (df['avg_temp'] / GRANULARITY_TEMP).round() * GRANULARITY_TEMP
     df['avg_humidity'] = (df['avg_humidity'] / GRANULARITY_HUMID).round() * GRANULARITY_HUMID
     df['avg_par'] = (df['avg_par'] / GRANULARITY_PAR).round() * GRANULARITY_PAR
