@@ -173,7 +173,7 @@ def analyze_experiment_prediction():
     # ==========================================
     # 1. הגדרות וטעינה
     # ==========================================
-    model_file = "q_agent_soil_w5_t2_h10_p100_actions_50.pkl"
+    model_file = "q_agent_soil_w5_t2_h10_p100_actions_50_21-3-2026.pkl"
     data_file = os.path.join("data", "tomato_mdp_final_filtered.parquet")
 
     if not os.path.exists(model_file):

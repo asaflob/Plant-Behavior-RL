@@ -6,7 +6,7 @@ import pickle
 import matplotlib.pyplot as plt
 from q_learning_algo import q_learning
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.cluster import KMeans
+from sklearn.mixture import GaussianMixture  # <--- ייבוא ה-GMM
 
 
 def train_plant_agent():
@@ -30,7 +30,7 @@ def train_plant_agent():
         return
 
     # --- סינון לפי סוג קרקע ---
-    target_soil = 'soil' #todo change to soil/sand
+    target_soil = 'sand'  # todo change to soil/sand
     print(f"Filtering data for soil type: '{target_soil}'...")
 
     if 'soil_type' in df.columns:
@@ -48,15 +48,14 @@ def train_plant_agent():
     min_dt = df['dt'].min()
     max_dt = df['dt'].max()
 
-
     df['stomatal_opening'] = (df['dt'] - min_dt) / (max_dt - min_dt)
     df['action_discrete'] = pd.cut(df['stomatal_opening'], bins=NUM_ACTIONS, labels=False)
 
     # ============================================================
-    # === Normalization + K-Means ===
+    # === Normalization + GMM ===
     # ============================================================
 
-    print("Normalizing data and applying K-Means...")
+    print("Normalizing data and applying GMM...")
 
     # א. הגדרת העמודות שמרכיבות את המצב
     state_cols = ['start_weight', 'avg_temp', 'avg_humidity', 'avg_par']
@@ -66,38 +65,41 @@ def train_plant_agent():
     df_normalized = pd.DataFrame(scaler.fit_transform(df[state_cols]), columns=state_cols)
 
     ###########################################
-    print("Generating Elbow Method plot to justify the number of states...")
-    k_values_to_test = [10, 20, 50, 100, 150, 200, 300, 400]#[700, 800, 900, 1000, 1500]
-    inertias = []
+    print("Generating BIC Score plot to justify the number of states...")
+    k_values_to_test = [10, 20, 30, 40, 50, 70, 100, 150, 200, 300, 400]
+    bic_scores = []
 
-    # בודקים כמה "טעות" יש בכל בחירה של מספר מצבים
+    # בודקים כמה "טעות" יש בכל בחירה של מספר מצבים לפי BIC
     for k in k_values_to_test:
-        temp_kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
-        temp_kmeans.fit(df_normalized)
-        inertias.append(temp_kmeans.inertia_)
+        temp_gmm = GaussianMixture(n_components=k, random_state=42, n_init=3)
+        temp_gmm.fit(df_normalized)
+        bic_scores.append(temp_gmm.bic(df_normalized))
 
     # מציירים את הגרף ושומרים אותו
     plt.figure(figsize=(10, 6))
-    plt.plot(k_values_to_test, inertias, marker='o', linestyle='-', color='purple', linewidth=2)
-    plt.title(f'Elbow Method For Optimal States (Soil: {target_soil})', fontsize=14)
-    plt.xlabel('Number of States (K)', fontsize=12)
-    plt.ylabel('Inertia (Error / Distances)', fontsize=12)
+    plt.plot(k_values_to_test, bic_scores, marker='o', linestyle='-', color='teal', linewidth=2)
+    plt.title(f'GMM BIC Score For Optimal States (Soil: {target_soil})', fontsize=14)
+    plt.xlabel('Number of States (Components)', fontsize=12)
+    plt.ylabel('BIC Score (Lower is Better)', fontsize=12)
     plt.grid(True, linestyle='--', alpha=0.7)
 
-    elbow_plot_filename = f"elbow_method_{target_soil}.png"
-    plt.savefig(elbow_plot_filename, dpi=300)
-    print(f"Saved Elbow plot as '{elbow_plot_filename}'. Look at this image to find the optimal NUM_STATES!")
+    gmm_plot_filename = f"gmm_bic_method_{target_soil}.png"
+    plt.savefig(gmm_plot_filename, dpi=300)
+    print(f"Saved BIC plot as '{gmm_plot_filename}'. Look for the MINIMUM point!")
     plt.close()
 
     ###########################################
 
-    # ג. K-Means
-    NUM_STATES = 400
-    kmeans = KMeans(n_clusters=NUM_STATES, random_state=42, n_init=10)
+    # ג. GMM
+    NUM_STATES = 200  # תשנה את זה לפי הנקודה הכי נמוכה שתראה בגרף ה-BIC החדש!
+    print(f"Running final GMM with {NUM_STATES} components...")
+    gmm = GaussianMixture(n_components=NUM_STATES, random_state=42, n_init=5)
 
     # מקבלים לאיזה אשכול שייכת כל שורה
-    cluster_labels = kmeans.fit_predict(df_normalized)
-    centroids_real = scaler.inverse_transform(kmeans.cluster_centers_)
+    cluster_labels = gmm.fit_predict(df_normalized)
+
+    # ב-GMM מרכזי הכובד נקראים means_
+    centroids_real = scaler.inverse_transform(gmm.means_)
 
     df[state_cols] = centroids_real[cluster_labels]
 
@@ -107,11 +109,11 @@ def train_plant_agent():
     # ==============================================================================
     # 2. בניית המודל (MDP Construction)
     # ==============================================================================
-    print("Building MDP directly from K-Means states...")
+    print("Building MDP directly from GMM states...")
 
     mdp_model = PlantMDPCluster(  # <--- שימוש במחלקה החדשה
         data_path=temp_file,
-        state_cols=state_cols,  # <--- מעבירים את רשימת העמודות! בלי bounds ו-granularity
+        state_cols=state_cols,  # <--- רשימת העמודות הטהורה
         action_col='action_discrete',
         weight_col='start_weight'
     )
@@ -145,12 +147,11 @@ def train_plant_agent():
     print(f"\nStarting Q-Learning Execution for {target_soil}...")
 
     THRESHOLD = 1e-4
-    # קריאה לפונקציה המבודדת מתוך הקובץ q_learning_algo.py
     Q_table, convergence_history = q_learning(
         mdp_model=mdp_model,
         env_step_func=get_env_step,
         num_actions=NUM_ACTIONS,
-        threshold = THRESHOLD
+        threshold=THRESHOLD
     )
 
     if os.path.exists(temp_file):
@@ -161,71 +162,34 @@ def train_plant_agent():
     # ==============================================================================
     print("Generating convergence plot...")
 
-    # plt.figure(figsize=(12, 6))
-    #
-    # window_size = 100
-    # smoothed_history = pd.Series(convergence_history).rolling(window=window_size, min_periods=1).mean()
-    #
-    # # 1. מציירים את הנתונים הגולמיים אבל חלש חלש ברקע (כדי שיראו שיש רעש)
-    # plt.plot(convergence_history, color='cornflowerblue', alpha=0.2, label='Raw Delta (Noisy)')
-    #
-    # # 2. מציירים את הממוצע הנע - קו כהה, עבה וברור!
-    # plt.plot(smoothed_history, color='navy', linewidth=2, label=f'Moving Average ({window_size} episodes)')
-    #
-    # # קו אדום מקווקו המייצג את סף ההתכנסות שלנו
-    # plt.axhline(y=THRESHOLD, color='red', linestyle='--', linewidth=2, label=f'Convergence Threshold ({THRESHOLD})')
-    #
-    # plt.title(f'Q-Learning Convergence for {target_soil} Soil', fontsize=16)
-    # plt.xlabel('Episodes', fontsize=14)
-    # plt.ylabel('Max Delta in Q-values', fontsize=14)
-    #
-    # # אפשר לחזור לסקאלה רגילה אם הממוצע הנע מחליק את זה מספיק,
-    # # או להשאיר את ה-symlog אם זה עדיין קופצני. ננסה symlog עדין:
-    # plt.yscale('symlog', linthresh=THRESHOLD)
-    #
-    # plt.grid(True, which="both", ls="--", alpha=0.5)
-    # plt.legend()
-    #
-    # # שמירת הגרף כתמונה
-    # plot_filename = f"convergence_plot_{target_soil}_smoothed.png"
-    # plt.savefig(plot_filename, dpi=300)
-    # print(f"Plot saved as {plot_filename}")
-
     plt.figure(figsize=(10, 6))
-
-    # ציור ההיסטוריה בסקאלה רגילה (ליניארית)
     plt.plot(convergence_history, color='blue', alpha=0.5, label='Max Q-value Change (Delta)')
-
-    # קו אדום מקווקו המייצג את סף ההתכנסות שלנו
     plt.axhline(y=THRESHOLD, color='red', linestyle='--', label=f'Convergence Threshold ({THRESHOLD})')
 
-    plt.title(f'Q-Learning Convergence for {target_soil} Soil', fontsize=14)
+    plt.title(f'Q-Learning Convergence for {target_soil} Soil (GMM)', fontsize=14)
     plt.xlabel('iteration', fontsize=12)
     plt.ylabel('Max Delta (Change) in Q-values', fontsize=12)
-
-    # plt.yscale('symlog', linthresh=THRESHOLD)
 
     plt.grid(True, which="both", ls="--", alpha=0.5)
     plt.legend()
 
-    # שמירת הגרף כתמונה
-    plot_filename = f"convergence_plot_{target_soil}.png"
+    plot_filename = f"convergence_plot_{target_soil}_gmm.png"
     plt.savefig(plot_filename, dpi=300)
     print(f"Plot saved as {plot_filename}")
-    # plt.show() # הסר את סימן ההערה אם אתה רוצה שהגרף יקפוץ לך על המסך בסיום ההרצה
 
     # ==============================================================================
     # 6. שמירת המודל
     # ==============================================================================
-    model_filename = f"q_agent_{target_soil}_kmeans_{NUM_STATES}_actions_{NUM_ACTIONS}.pkl"
+    model_filename = f"q_agent_{target_soil}_gmm_{NUM_STATES}_actions_{NUM_ACTIONS}.pkl"
     print(f"\nSaving model to {model_filename}...")
 
     model_data = {
         "q_table": Q_table,
         "soil_type": target_soil,
         "num_actions": NUM_ACTIONS,
-        "clustering_method": "K-Means",
-        "num_states": NUM_STATES,"optimal_policy": {s: max(Q_table[s], key=Q_table[s].get) for s in mdp_model.states if Q_table[s]}
+        "clustering_method": "GMM",
+        "num_states": NUM_STATES,
+        "optimal_policy": {s: max(Q_table[s], key=Q_table[s].get) for s in mdp_model.states if Q_table[s]}
     }
 
     with open(model_filename, "wb") as f:
