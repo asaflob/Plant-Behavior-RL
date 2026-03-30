@@ -510,7 +510,10 @@ def analyze_experiment_prediction_final():
     plt.tight_layout()
     plt.show()
 
-
+#q_agent_sand_gmm_200_actions_50.pkl
+#q_agent_soil_gmm_70_actions_50.pkl
+#q_agent_soil_kmeans_400_actions_50.pkl
+#q_agent_sand_kmeans_1400_actions_50.pkl
 if __name__ == "__main__":
     analyze_experiment_prediction_final()
 

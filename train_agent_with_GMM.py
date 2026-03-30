@@ -44,7 +44,7 @@ def train_plant_agent():
 
     df = df.dropna(subset=['dt', 'start_weight', 'end_weight', 'avg_temp', 'avg_humidity', 'avg_par'])
 
-    # --- א. יצירת ה-Action ---
+    # --- יצירת ה-action ---
     min_dt = df['dt'].min()
     max_dt = df['dt'].max()
 

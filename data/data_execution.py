@@ -844,27 +844,27 @@ def analyze_wspar_behavior(filename='tomato_processed_data.parquet'):
 
 
 if __name__ == "__main__":
-    intermediate_file = 'tomato_mdp_ready_with_temp_humidity_light.parquet'
-
-    print(">>> STEP 1: Generating Daily Summary with PAR...")
-    generate_daily_summary_with_temp(
-        source_file='tomato_processed_data.parquet',
-        output_file=intermediate_file
-    )
-
-    # --- שלב 2: סינון ערכי טרנספירציה גבוהים (dt < 800) ---
-    # אנחנו לוקחים את הקובץ שיצרנו בשלב 1, ומייצרים ממנו את הקובץ הסופי לאימון
-    final_training_file = 'tomato_mdp_final_filtered.parquet'
-
-    print("\n>>> STEP 2: Filtering High Transpiration (dt < 800)...")
-    create_filtered_mdp_file(
-        source_file=intermediate_file,
-        output_file=final_training_file,
-        threshold=800
-    )
-
-    print(f"\n✅ PIPELINE COMPLETE.")
-    print(f"The file ready for the Agent is: {final_training_file}")
+    intermediate_file = 'tomato_raw_data_v2.parquet'
+    print(pd.read_parquet(intermediate_file).head())
+    # print(">>> STEP 1: Generating Daily Summary with PAR...")
+    # generate_daily_summary_with_temp(
+    #     source_file='tomato_processed_data.parquet',
+    #     output_file=intermediate_file
+    # )
+    #
+    # # --- שלב 2: סינון ערכי טרנספירציה גבוהים (dt < 800) ---
+    # # אנחנו לוקחים את הקובץ שיצרנו בשלב 1, ומייצרים ממנו את הקובץ הסופי לאימון
+    # final_training_file = 'tomato_mdp_final_filtered.parquet'
+    #
+    # print("\n>>> STEP 2: Filtering High Transpiration (dt < 800)...")
+    # create_filtered_mdp_file(
+    #     source_file=intermediate_file,
+    #     output_file=final_training_file,
+    #     threshold=800
+    # )
+    #
+    # print(f"\n✅ PIPELINE COMPLETE.")
+    # print(f"The file ready for the Agent is: {final_training_file}")
 
     # analyze_wspar_behavior('tomato_processed_data.parquet')
     # original_file = os.path.join("tomato_mdp_ready_with_temp_humidity.parquet")
