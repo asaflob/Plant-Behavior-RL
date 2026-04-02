@@ -47,11 +47,7 @@ class PlantMDPCluster:
             actions_data = plant_df[self.action_col].values
 
             # נאתר איפה נמצא המשקל בתוך ה-State כדי לחשב Reward
-            try:
-                weight_idx = self.state_cols.index(self.weight_col_name)
-            except ValueError:
-                raise ValueError(
-                    f"Weight column '{self.weight_col_name}' must be one of the state keys defined in state_cols!")
+            weights_data = plant_df[self.weight_col_name].values
 
             # לולאה על ימי הצמח (עד יום אחד לפני הסוף)
             for i in range(len(plant_df) - 1):
@@ -68,8 +64,20 @@ class PlantMDPCluster:
                 self.transitions[curr_s][action][next_s] += 1
 
                 # 2. Record reward (Weight Gain)
-                gain = next_s[weight_idx] - curr_s[weight_idx]
+                gain = weights_data[i + 1] - weights_data[i]
                 reward_accumulator[(curr_s, action)].append(gain)
+                ########################## todo
+                # current_weight = weights_data[i]
+                # next_weight = weights_data[i + 1]
+                #
+                # # מונעים חלוקה באפס למקרה שיש תקלות חיישן
+                # if current_weight > 0:
+                #     gain_pct = ((next_weight - current_weight) / current_weight) * 100
+                # else:
+                #     gain_pct = 0
+                #
+                # reward_accumulator[(curr_s, action)].append(gain_pct)
+                ########################### todo check if it ok only with the pnw
 
         # 3. Calculate Expected Rewards
         for key, gains in reward_accumulator.items():

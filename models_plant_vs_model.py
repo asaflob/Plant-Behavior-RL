@@ -331,14 +331,10 @@ def analyze_experiment_prediction():
     plt.show()
 
 ###########################
-
-def analyze_experiment_prediction_final():
+def analyze_experiment_prediction_final(model_file):
     # ==========================================
     # 1. הגדרות וטעינה
     # ==========================================
-    # שים לב: וודא שזה השם המדויק של הקובץ שלך
-    model_file = "q_agent_sand_w5_t2_h10_p100_actions_10.pkl"
-
     # שימוש בקובץ הדאטה החדש והמסונן
     data_file = os.path.join("data", "tomato_mdp_final_filtered.parquet")
 
@@ -355,20 +351,16 @@ def analyze_experiment_prediction_final():
         agent_data = pickle.load(f)
 
     policy = agent_data['optimal_policy']
-    gran = agent_data['granularities']
-
-    # בדיקה מהירה: האם המודל כולל PAR?
-    has_par = 'par' in gran
-    print(f"Agent Config -> Granularities: {gran}, Has PAR: {has_par}")
-
-    # max_act_in_policy = max(policy.values())
-    # NUM_ACTIONS = max_act_in_policy + 1
     NUM_ACTIONS = agent_data['num_actions']
+    target_soil = agent_data.get('soil_type', 'sand')  # ברירת מחדל
+
+    # בדיקה האם זה מודל מבוסס קלאסטרים (GMM/K-Means) או רשת ישנה (Granularities)
+    is_cluster_model = 'clustering_method' in agent_data
+    print(f"Agent Config -> Soil: {target_soil}, Actions: {NUM_ACTIONS}, Is Cluster Model: {is_cluster_model}")
 
     # טעינת הדאטה
     print("Loading Data...")
     df = pd.read_parquet(data_file)
-    target_soil = agent_data.get('soil_type', 'sand')  # ברירת מחדל sand
     df = df[df['soil_type'].astype(str).str.strip() == target_soil]
 
     GLOBAL_MIN_DT = df['dt'].min()
@@ -385,20 +377,11 @@ def analyze_experiment_prediction_final():
     if not valid_plants:
         print("No plants with enough data (>10 days) found.")
         return
-    #
-    # # בחירה רנדומלית
-    # chosen_plant_id = random.choice(valid_plants)
-    # total_days = plant_counts[chosen_plant_id]
-    #
-    # print(f"\nAnalyzing Prediction for RANDOM Plant ID: {chosen_plant_id} (Total days: {total_days})")
-    #
-    # plant_df = df[df['unique_id'] == chosen_plant_id].sort_values('day_num')
 
     chosen_plant_id = df['unique_id'].value_counts().idxmax()
     print(f"\nAnalyzing Prediction for Plant ID: {chosen_plant_id}")
 
     plant_df = df[df['unique_id'] == chosen_plant_id].sort_values('day_num')
-
 
     # ==========================================
     # 3. הריצה: יום אחרי יום
@@ -407,30 +390,41 @@ def analyze_experiment_prediction_final():
     correct_predictions = 0
     total_known_states = 0
 
+    # שליפת כל המצבים המוכרים כדי למצוא את הקרוב ביותר (עבור מודל קלאסטרים)
+    known_states = list(policy.keys())
+
     for _, row in plant_df.iterrows():
         # א. נתונים גולמיים
         w_real = row['start_weight']
         t_real = row['avg_temp']
         h_real = row['avg_humidity']
         dt_real = row['dt']
-
-        # שליפת נתון ה-PAR
         p_real = row.get('avg_par', 0)
 
         # ב. המרה לפעולה אמיתית
         real_action = get_real_action_from_dt(dt_real, GLOBAL_MIN_DT, GLOBAL_MAX_DT, NUM_ACTIONS)
 
-        # ג. יצירת ה-State (דיסקרטיזציה)
-        w_grid = round(w_real / gran['weight']) * gran['weight']
-        t_grid = round(t_real / gran['temp']) * gran['temp']
-        h_grid = round(h_real / gran['humid']) * gran['humid']
+        # ג. יצירת ה-State
+        if is_cluster_model:
+            # במודל החדש ה-State הוא רק 3 ערכים: (טמפרטורה, לחות, אור)
+            current_env = np.array([t_real, h_real, p_real])
 
-        # בניית ה-State בהתאם למה שהמודל מכיר
-        if has_par:
-            p_grid = round(p_real / gran['par']) * gran['par']
-            state = (w_grid, t_grid, h_grid, p_grid)
+            # מציאת קלאסטר האקלים הקרוב ביותר מתוך אלו שהסוכן למד
+            # משתמשים במרחק אוקלידי למציאת המרכז הקרוב
+            closest_state = min(known_states, key=lambda s: np.sum((np.array(s) - current_env) ** 2))
+            state = closest_state
         else:
-            state = (w_grid, t_grid, h_grid)
+            # תמיכה לאחור במודל הרשת הישן
+            gran = agent_data['granularities']
+            w_grid = round(w_real / gran['weight']) * gran['weight']
+            t_grid = round(t_real / gran['temp']) * gran['temp']
+            h_grid = round(h_real / gran['humid']) * gran['humid']
+
+            if 'par' in gran:
+                p_grid = round(p_real / gran['par']) * gran['par']
+                state = (w_grid, t_grid, h_grid, p_grid)
+            else:
+                state = (w_grid, t_grid, h_grid)
 
         # ד. בדיקה מול המדיניות
         if state in policy:
@@ -461,8 +455,8 @@ def analyze_experiment_prediction_final():
 
     # --- חישובים סטטיסטיים ---
     accuracy = correct_predictions / total_known_states
-    mae = valid_rows['Diff'].mean()  # Mean Absolute Error
-    mse = (valid_rows['Diff'] ** 2).mean()  # <--- הוספנו: Mean Squared Error (Loss)
+    mae = valid_rows['Diff'].mean()
+    mse = (valid_rows['Diff'] ** 2).mean()
     recognition_rate = len(valid_rows) / len(res_df)
 
     # עדכון הטקסט בתיבה
@@ -472,7 +466,7 @@ def analyze_experiment_prediction_final():
         f"Recognized States: {recognition_rate:.1%}\n"
         f"Exact Accuracy: {accuracy:.1%}\n"
         f"MAE (Avg Error): {mae:.2f}\n"
-        f"MSE (Loss): {mse:.2f}"  # <--- הוספנו לתצוגה
+        f"MSE (Loss): {mse:.2f}"
     )
 
     print(f"\n=== RESULTS ===\n{stats_text}")
@@ -489,13 +483,9 @@ def analyze_experiment_prediction_final():
     ax1.set_ylabel(f'Action Level (0-{NUM_ACTIONS - 1})', fontsize=12)
     ax1.set_ylim(-0.5, NUM_ACTIONS - 0.5)
 
-    # --- תיקון מיקום ה-Legend והטקסט ---
-    # Legend בצד ימין למעלה
     ax1.legend(loc='upper right')
-
     ax1.grid(True, alpha=0.3)
 
-    # תיבת טקסט בצד שמאל למעלה (0.02, 0.95)
     props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
     ax1.text(0.02, 0.95, stats_text, transform=ax1.transAxes, fontsize=11,
              verticalalignment='top', bbox=props)
@@ -510,20 +500,228 @@ def analyze_experiment_prediction_final():
     plt.tight_layout()
     plt.show()
 
-#q_agent_sand_gmm_200_actions_50.pkl
-#q_agent_soil_gmm_70_actions_50.pkl
+###########################
+def analyze_experiment_prediction_final_evaporation_percentage(model_file):
+    # ==========================================
+    # 1. הגדרות וטעינה
+    # ==========================================
+    # שים לב: אנחנו משתמשים בקובץ החדש שיש בו PNW!
+    data_file = os.path.join("data", "tomato_mdp_final_with_pnw.parquet")
+
+    if not os.path.exists(model_file):
+        print(f"Error: Model file '{model_file}' not found.")
+        return
+    if not os.path.exists(data_file):
+        print(f"Error: Data file '{data_file}' not found.")
+        return
+
+    # טעינת המודל
+    print(f"Loading Agent: {model_file}...")
+    with open(model_file, 'rb') as f:
+        agent_data = pickle.load(f)
+
+    policy = agent_data['optimal_policy']
+    NUM_ACTIONS = agent_data['num_actions']
+    target_soil = agent_data.get('soil_type', 'sand')  # ברירת מחדל
+
+    # חילוץ שיטת חישוב הפעולות מתוך המודל (אם לא קיים, נניח שזו השיטה הישנה)
+    action_method = agent_data.get('action_method', 'DT_NORMALIZED')
+
+    is_cluster_model = 'clustering_method' in agent_data
+    print(
+        f"Agent Config -> Soil: {target_soil}, Actions: {NUM_ACTIONS}, Method: {action_method}, Is Cluster Model: {is_cluster_model}")
+
+    # טעינת הדאטה
+    print("Loading Data...")
+    df = pd.read_parquet(data_file)
+    df = df[df['soil_type'].astype(str).str.strip() == target_soil]
+
+    # ============================================================
+    # === יצירת הפעולות האמיתיות מראש לכל הדאטה ===
+    # ============================================================
+    if action_method == 'DT_NORMALIZED' or action_method == 'DT_GRANULARITY':
+        min_dt = df['dt'].min()
+        max_dt = df['dt'].max()
+        df['stomatal_opening'] = (df['dt'] - min_dt) / (max_dt - min_dt)
+        df['real_action_discrete'] = pd.cut(df['stomatal_opening'], bins=NUM_ACTIONS, labels=False)
+
+    elif action_method == 'EVAPORATION_PERCENTAGE':
+        df['evap_pct'] = (df['dt'] / df['pnw']) * 100
+        df['evap_pct'] = df['evap_pct'].replace([np.inf, -np.inf], np.nan)
+        df = df.dropna(subset=['evap_pct'])
+
+        # --- התיקון: שימוש ב-qcut (Quantiles) כדי להתגבר על Outliers ---
+        # duplicates='drop' דואג שאם יש הרבה ימים עם אותו אחוז בדיוק (למשל 0%), הקוד לא יקרוס
+        df['real_action_discrete'] = pd.qcut(df['evap_pct'], q=NUM_ACTIONS, labels=False, duplicates='drop')
+
+        # מכיוון ש-qcut עלול לצמצם את כמות הפעולות האמיתית אם הורדנו כפילויות,
+        # נוודא שהסוכן מודע לסקאלה המדויקת של הצמח האמיתי
+        actual_num_actions = df['real_action_discrete'].nunique()
+        print(f"Info: Actual number of distinct action levels created by qcut: {actual_num_actions}")
+
+    # elif action_method == 'EVAPORATION_PERCENTAGE':
+    #     df['evap_pct'] = (df['dt'] / df['pnw']) * 100
+    #     df['evap_pct'] = df['evap_pct'].replace([np.inf, -np.inf], np.nan)
+    #     # מסירים שורות שבהן לא ניתן לחשב את האחוז
+    #     df = df.dropna(subset=['evap_pct'])
+    #     df['real_action_discrete'] = pd.cut(df['evap_pct'], bins=NUM_ACTIONS, labels=False)
+
+    else:
+        print("Error: Unknown action method in model.")
+        return
+
+    # מסננים שורות שאין להן פעולה אמיתית לאחר החישוב
+    df = df.dropna(subset=['real_action_discrete'])
+
+    # ==========================================
+    # 2. בחירת צמח (ניסוי) לבדיקה
+    # ==========================================
+    plant_counts = df['unique_id'].value_counts()
+
+    # מסננים רק צמחים שיש להם לפחות 10 ימים
+    valid_plants = plant_counts[plant_counts >= 10].index.tolist()
+
+    if not valid_plants:
+        print("No plants with enough data (>10 days) found.")
+        return
+
+    chosen_plant_id = df['unique_id'].value_counts().idxmax()
+    print(f"\nAnalyzing Prediction for Plant ID: {chosen_plant_id}")
+
+    plant_df = df[df['unique_id'] == chosen_plant_id].sort_values('day_num')
+
+    # ==========================================
+    # 3. הריצה: יום אחרי יום
+    # ==========================================
+    results = []
+    correct_predictions = 0
+    total_known_states = 0
+
+    known_states = list(policy.keys())
+
+    for _, row in plant_df.iterrows():
+        # א. נתונים גולמיים
+        w_real = row['start_weight']
+        t_real = row['avg_temp']
+        h_real = row['avg_humidity']
+        p_real = row.get('avg_par', 0)
+
+        # ב. שליפת הפעולה האמיתית (שכבר חישבנו למעלה בצורה גלובלית!)
+        real_action = int(row['real_action_discrete'])
+
+        # ג. יצירת ה-State
+        if is_cluster_model:
+            # במודל החדש ה-State הוא רק 3 ערכים: (טמפרטורה, לחות, אור)
+            current_env = np.array([t_real, h_real, p_real])
+
+            # מציאת קלאסטר האקלים הקרוב ביותר
+            closest_state = min(known_states, key=lambda s: np.sum((np.array(s) - current_env) ** 2))
+            state = closest_state
+        else:
+            gran = agent_data['granularities']
+            w_grid = round(w_real / gran['weight']) * gran['weight']
+            t_grid = round(t_real / gran['temp']) * gran['temp']
+            h_grid = round(h_real / gran['humid']) * gran['humid']
+
+            if 'par' in gran:
+                p_grid = round(p_real / gran['par']) * gran['par']
+                state = (w_grid, t_grid, h_grid, p_grid)
+            else:
+                state = (w_grid, t_grid, h_grid)
+
+        # ד. בדיקה מול המדיניות
+        if state in policy:
+            agent_action = policy[state]
+            total_known_states += 1
+            if agent_action == real_action:
+                correct_predictions += 1
+        else:
+            agent_action = np.nan
+
+        results.append({
+            'Day': row['day_num'],
+            'Real_Action': real_action,
+            'Agent_Action': agent_action,
+            'Diff': abs(real_action - agent_action) if not pd.isna(agent_action) else None
+        })
+
+    res_df = pd.DataFrame(results)
+
+    # ==========================================
+    # 4. ויזואליזציה וסטטיסטיקה
+    # ==========================================
+    valid_rows = res_df.dropna(subset=['Agent_Action'])
+
+    if len(valid_rows) == 0:
+        print("CRITICAL: The Agent recognized NONE of the states. Check Granularity match!")
+        return
+
+    # --- חישובים סטטיסטיים ---
+    accuracy = correct_predictions / total_known_states
+    mae = valid_rows['Diff'].mean()
+    mse = (valid_rows['Diff'] ** 2).mean()
+    recognition_rate = len(valid_rows) / len(res_df)
+
+    stats_text = (
+        f"Plant ID: {chosen_plant_id}\n"
+        f"Action Method: {action_method}\n"
+        f"Total Days: {len(res_df)}\n"
+        f"Recognized States: {recognition_rate:.1%}\n"
+        f"Exact Accuracy: {accuracy:.1%}\n"
+        f"MAE (Avg Error): {mae:.2f}\n"
+        f"MSE (Loss): {mse:.2f}"
+    )
+
+    print(f"\n=== RESULTS ===\n{stats_text}")
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={'height_ratios': [2, 1]})
+
+    # גרף עליון
+    ax1.plot(res_df['Day'], res_df['Real_Action'], label='Real Plant (Observed)',
+             color='blue', marker='o', alpha=0.6, linewidth=2)
+    ax1.plot(res_df['Day'], res_df['Agent_Action'], label='Agent Policy (Predicted)',
+             color='red', marker='x', linestyle='--', linewidth=2)
+
+    ax1.set_title(f'Generalization Test: Real Plant vs. Agent Strategy', fontsize=16)
+    ax1.set_ylabel(f'Action Level (0-{NUM_ACTIONS - 1})', fontsize=12)
+    ax1.set_ylim(-0.5, NUM_ACTIONS - 0.5)
+
+    ax1.legend(loc='upper right')
+    ax1.grid(True, alpha=0.3)
+
+    props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+    ax1.text(0.02, 0.95, stats_text, transform=ax1.transAxes, fontsize=11,
+             verticalalignment='top', bbox=props)
+
+    # גרף תחתון (שגיאות)
+    ax2.bar(valid_rows['Day'], valid_rows['Diff'], color='purple', alpha=0.7)
+    ax2.set_title('Prediction Error per Day', fontsize=14)
+    ax2.set_xlabel('Day in Experiment')
+    ax2.set_ylabel('Diff (Abs Error)')
+    ax2.grid(axis='y', alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()
+
+
 #q_agent_soil_kmeans_400_actions_50.pkl
 #q_agent_sand_kmeans_1400_actions_50.pkl
-if __name__ == "__main__":
-    analyze_experiment_prediction_final()
 
-# def analyze_experiment_prediction_final():
+#q_agent_soil_gmm_121_act_50_DT_GRANULARITY.pkl
+#q_agent_sand_gmm_500_act_50_DT_GRANULARITY.pkl
+#q_agent_soil_gmm_121_act_50_EVAPORATION_PERCENTAGE.pkl
+#q_agent_sand_gmm_500_act_50_EVAPORATION_PERCENTAGE.pkl
+#q_agent_sand_gmm_500_actions_50.pkl this is with 3 elements in the state
+#q_agent_soil_gmm_121_actions_50.pkl this is with 3 elements in the state
+if __name__ == "__main__":
+    target_model = "q_agent_soil_gmm_121_act_50_EVAPORATION_PERCENTAGE.pkl"
+    analyze_experiment_prediction_final_evaporation_percentage(target_model)
+# def analyze_experiment_prediction_final(model_file):
 #     # ==========================================
 #     # 1. הגדרות וטעינה
 #     # ==========================================
-#     # שים לב: וודא שזה השם המדויק שנוצר לך באימון האחרון
-#     # (שיניתי ל-sand כי בקוד האימון הקודם הגדרת target_soil='sand')
-#     model_file = "q_agent_sand_w5_t2_h10_p100_actions_10.pkl"
+#     # שים לב: וודא שזה השם המדויק של הקובץ שלך
+#     # model_file = "q_agent_sand_w5_t2_h10_p100_actions_10.pkl"
 #
 #     # שימוש בקובץ הדאטה החדש והמסונן
 #     data_file = os.path.join("data", "tomato_mdp_final_filtered.parquet")
@@ -541,14 +739,7 @@ if __name__ == "__main__":
 #         agent_data = pickle.load(f)
 #
 #     policy = agent_data['optimal_policy']
-#     gran = agent_data['granularities']
-#
-#     # בדיקה מהירה: האם המודל כולל PAR?
-#     has_par = 'par' in gran
-#     print(f"Agent Config -> Granularities: {gran}, Has PAR: {has_par}")
-#
-#     max_act_in_policy = max(policy.values())
-#     NUM_ACTIONS = max_act_in_policy + 1
+#     NUM_ACTIONS = agent_data['num_actions']
 #
 #     # טעינת הדאטה
 #     print("Loading Data...")
@@ -562,31 +753,27 @@ if __name__ == "__main__":
 #     # ==========================================
 #     # 2. בחירת צמח (ניסוי) לבדיקה
 #     # ==========================================
-#
 #     plant_counts = df['unique_id'].value_counts()
 #
-#     # מסננים רק צמחים שיש להם לפחות 10 ימים (כדי לא ליפול על ניסוי קצר ומשעמם)
+#     # מסננים רק צמחים שיש להם לפחות 10 ימים
 #     valid_plants = plant_counts[plant_counts >= 10].index.tolist()
 #
 #     if not valid_plants:
 #         print("No plants with enough data (>10 days) found.")
 #         return
+#     #
+#     # # בחירה רנדומלית
+#     # chosen_plant_id = random.choice(valid_plants)
+#     # total_days = plant_counts[chosen_plant_id]
+#     #
+#     # print(f"\nAnalyzing Prediction for RANDOM Plant ID: {chosen_plant_id} (Total days: {total_days})")
+#     #
+#     # plant_df = df[df['unique_id'] == chosen_plant_id].sort_values('day_num')
 #
-#     # בחירה רנדומלית
-#     chosen_plant_id = random.choice(valid_plants)
-#     total_days = plant_counts[chosen_plant_id]
-#
-#     print(f"\nAnalyzing Prediction for RANDOM Plant ID: {chosen_plant_id} (Total days: {total_days})")
+#     chosen_plant_id = df['unique_id'].value_counts().idxmax()
+#     print(f"\nAnalyzing Prediction for Plant ID: {chosen_plant_id}")
 #
 #     plant_df = df[df['unique_id'] == chosen_plant_id].sort_values('day_num')
-#
-#
-#     # # נבחר את הצמח עם הכי הרבה ימים
-#     # best_plant = df['unique_id'].value_counts().idxmax()
-#     # print(f"\nAnalyzing Prediction for Plant ID: {best_plant}")
-#     #
-#     # plant_df = df[df['unique_id'] == best_plant].sort_values('day_num')
-#
 #
 #
 #     # ==========================================
@@ -603,7 +790,7 @@ if __name__ == "__main__":
 #         h_real = row['avg_humidity']
 #         dt_real = row['dt']
 #
-#         # שליפת נתון ה-PAR (אם קיים בדאטה)
+#         # שליפת נתון ה-PAR
 #         p_real = row.get('avg_par', 0)
 #
 #         # ב. המרה לפעולה אמיתית
@@ -617,9 +804,9 @@ if __name__ == "__main__":
 #         # בניית ה-State בהתאם למה שהמודל מכיר
 #         if has_par:
 #             p_grid = round(p_real / gran['par']) * gran['par']
-#             state = (w_grid, t_grid, h_grid, p_grid)  # 4 מימדים
+#             state = (w_grid, t_grid, h_grid, p_grid)
 #         else:
-#             state = (w_grid, t_grid, h_grid)  # 3 מימדים (תמיכה לאחור)
+#             state = (w_grid, t_grid, h_grid)
 #
 #         # ד. בדיקה מול המדיניות
 #         if state in policy:
@@ -640,7 +827,7 @@ if __name__ == "__main__":
 #     res_df = pd.DataFrame(results)
 #
 #     # ==========================================
-#     # 4. ויזואליזציה (אותו דבר כמו קודם)
+#     # 4. ויזואליזציה וסטטיסטיקה
 #     # ==========================================
 #     valid_rows = res_df.dropna(subset=['Agent_Action'])
 #
@@ -648,22 +835,27 @@ if __name__ == "__main__":
 #         print("CRITICAL: The Agent recognized NONE of the states. Check Granularity match!")
 #         return
 #
+#     # --- חישובים סטטיסטיים ---
 #     accuracy = correct_predictions / total_known_states
-#     mae = valid_rows['Diff'].mean()
+#     mae = valid_rows['Diff'].mean()  # Mean Absolute Error
+#     mse = (valid_rows['Diff'] ** 2).mean()  # <--- הוספנו: Mean Squared Error (Loss)
 #     recognition_rate = len(valid_rows) / len(res_df)
 #
+#     # עדכון הטקסט בתיבה
 #     stats_text = (
 #         f"Plant ID: {chosen_plant_id}\n"
 #         f"Total Days: {len(res_df)}\n"
 #         f"Recognized States: {recognition_rate:.1%}\n"
 #         f"Exact Accuracy: {accuracy:.1%}\n"
-#         f"Mean Error (MAE): {mae:.2f}"
+#         f"MAE (Avg Error): {mae:.2f}\n"
+#         f"MSE (Loss): {mse:.2f}"  # <--- הוספנו לתצוגה
 #     )
 #
 #     print(f"\n=== RESULTS ===\n{stats_text}")
 #
 #     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={'height_ratios': [2, 1]})
 #
+#     # גרף עליון
 #     ax1.plot(res_df['Day'], res_df['Real_Action'], label='Real Plant (Observed)',
 #              color='blue', marker='o', alpha=0.6, linewidth=2)
 #     ax1.plot(res_df['Day'], res_df['Agent_Action'], label='Agent Policy (Predicted)',
@@ -671,21 +863,25 @@ if __name__ == "__main__":
 #
 #     ax1.set_title(f'Generalization Test: Real Plant vs. Agent Strategy', fontsize=16)
 #     ax1.set_ylabel(f'Action Level (0-{NUM_ACTIONS - 1})', fontsize=12)
-#     ax1.legend(loc='upper left')
+#     ax1.set_ylim(-0.5, NUM_ACTIONS - 0.5)
+#
+#     # --- תיקון מיקום ה-Legend והטקסט ---
+#     # Legend בצד ימין למעלה
+#     ax1.legend(loc='upper right')
+#
 #     ax1.grid(True, alpha=0.3)
 #
+#     # תיבת טקסט בצד שמאל למעלה (0.02, 0.95)
 #     props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
 #     ax1.text(0.02, 0.95, stats_text, transform=ax1.transAxes, fontsize=11,
 #              verticalalignment='top', bbox=props)
 #
+#     # גרף תחתון (שגיאות)
 #     ax2.bar(valid_rows['Day'], valid_rows['Diff'], color='purple', alpha=0.7)
 #     ax2.set_title('Prediction Error per Day', fontsize=14)
 #     ax2.set_xlabel('Day in Experiment')
-#     ax2.set_ylabel('Diff')
+#     ax2.set_ylabel('Diff (Abs Error)')
 #     ax2.grid(axis='y', alpha=0.3)
 #
 #     plt.tight_layout()
 #     plt.show()
-
-# if __name__ == "__main__":
-#     analyze_experiment_prediction_final()

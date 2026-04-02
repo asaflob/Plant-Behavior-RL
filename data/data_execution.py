@@ -842,31 +842,65 @@ def analyze_wspar_behavior(filename='tomato_processed_data.parquet'):
         print(f"{hour:<5} | {val:<10.1f}")
 
 
+def generate_daily_data_with_pnw():
+    # 1. הגדרת נתיבים
+    raw_file = os.path.join("tomato_raw_data_v2.parquet")
+    daily_file = os.path.join("tomato_mdp_final_filtered.parquet")
+    output_file = os.path.join("tomato_mdp_final_with_pnw.parquet")
+
+    print(f"Loading raw data from: {raw_file}")
+    print(f"Loading daily data from: {daily_file}")
+
+    try:
+        raw_df = pd.read_parquet(raw_file)
+        daily_df = pd.read_parquet(daily_file)
+    except FileNotFoundError as e:
+        print(f"Error loading files: {e}")
+        return
+
+    # 2. סידור עמודת התאריכים בשני הקבצים כדי שהמיזוג יעבוד בצורה מושלמת
+    # מוודאים שאנחנו משווים תאריך בלבד (ללא שעות)
+    raw_df = raw_df.reset_index()
+    # 2. סידור עמודת התאריכים בשני הקבצים כדי שהמיזוג יעבוד בצורה מושלמת
+    # בודקים גם את השם 'index' למקרה ש-Pandas נתן לו שם ברירת מחדל כשהוציא אותו
+    raw_df['date_only'] = pd.to_datetime(raw_df['timestamp']).dt.date
+
+    daily_df['date_only'] = pd.to_datetime(daily_df['date']).dt.date
+
+    # 3. חילוץ ה-PNW מהקובץ הגולמי
+    print("Extracting PNW values...")
+    # מכיוון שה-PNW מחושב פעם ביום, ניקח את ערך המקסימום שלו לאותו יום
+    # (מה שמתעלם מ-NaNs או אפסים שעלולים להיות בשאר דגימות ה-3 דקות)
+    pnw_daily = raw_df.groupby(['unique_id', 'date_only'])['pnw'].max().reset_index()
+
+    # 4. מיזוג (Merge) ה-PNW לתוך טבלת המצבים שלנו
+    print("Merging PNW into daily data...")
+    merged_df = pd.merge(daily_df, pnw_daily, on=['unique_id', 'date_only'], how='left')
+
+    # ננקה את עמודת העזר שיצרנו
+    merged_df = merged_df.drop(columns=['date_only'])
+
+    # 5. בקרת איכות (QA)
+    missing_pnw = merged_df['pnw'].isna().sum()
+    total_rows = len(merged_df)
+    print(f"Total rows: {total_rows}")
+    print(f"Rows with missing PNW: {missing_pnw} ({(missing_pnw / total_rows) * 100:.2f}%)")
+
+    # אם יש קצת חוסרים, נמלא אותם בעזרת הערך של היום הקודם עבור אותו צמח
+    if missing_pnw > 0:
+        print("Forward-filling missing PNW values per plant...")
+        merged_df['pnw'] = merged_df.groupby('unique_id')['pnw'].ffill()
+
+    # 6. שמירה לקובץ החדש
+    merged_df.to_parquet(output_file)
+    print(f"\nSUCCESS! New dataset with PNW saved to: {output_file}")
+
+    # נדפיס את 5 השורות הראשונות כדי לוודא שזה נראה טוב
+    print("\nPreview of new columns:")
+    print(merged_df[['unique_id', 'day_num', 'dt', 'pnw']].head())
 
 if __name__ == "__main__":
-    intermediate_file = 'tomato_raw_data_v2.parquet'
-    print(pd.read_parquet(intermediate_file).head())
-    # print(">>> STEP 1: Generating Daily Summary with PAR...")
-    # generate_daily_summary_with_temp(
-    #     source_file='tomato_processed_data.parquet',
-    #     output_file=intermediate_file
-    # )
-    #
-    # # --- שלב 2: סינון ערכי טרנספירציה גבוהים (dt < 800) ---
-    # # אנחנו לוקחים את הקובץ שיצרנו בשלב 1, ומייצרים ממנו את הקובץ הסופי לאימון
-    # final_training_file = 'tomato_mdp_final_filtered.parquet'
-    #
-    # print("\n>>> STEP 2: Filtering High Transpiration (dt < 800)...")
-    # create_filtered_mdp_file(
-    #     source_file=intermediate_file,
-    #     output_file=final_training_file,
-    #     threshold=800
-    # )
-    #
-    # print(f"\n✅ PIPELINE COMPLETE.")
-    # print(f"The file ready for the Agent is: {final_training_file}")
-
-    # analyze_wspar_behavior('tomato_processed_data.parquet')
-    # original_file = os.path.join("tomato_mdp_ready_with_temp_humidity.parquet")
-    # filtered_file = os.path.join("tomato_mdp_filtered_dt800_ready.parquet")
-    # create_filtered_mdp_file(original_file, filtered_file, threshold=800)
+    generate_daily_data_with_pnw()
+    # intermediate_file = 'tomato_raw_data_v2.parquet'
+    # df = pd.read_parquet(intermediate_file)
+    # print(df.columns.tolist())

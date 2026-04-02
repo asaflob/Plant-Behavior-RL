@@ -48,7 +48,6 @@ def train_plant_agent():
     min_dt = df['dt'].min()
     max_dt = df['dt'].max()
 
-
     df['stomatal_opening'] = (df['dt'] - min_dt) / (max_dt - min_dt)
     df['action_discrete'] = pd.cut(df['stomatal_opening'], bins=NUM_ACTIONS, labels=False)
 
@@ -58,8 +57,8 @@ def train_plant_agent():
 
     print("Normalizing data and applying K-Means...")
 
-    # א. הגדרת העמודות שמרכיבות את המצב
-    state_cols = ['start_weight', 'avg_temp', 'avg_humidity', 'avg_par']
+    # א. הגדרת העמודות שמרכיבות את המצב - אקלים בלבד
+    state_cols = ['avg_temp', 'avg_humidity', 'avg_par']
 
     # ב. נרמול
     scaler = MinMaxScaler()
@@ -67,7 +66,8 @@ def train_plant_agent():
 
     ###########################################
     print("Generating Elbow Method plot to justify the number of states...")
-    k_values_to_test = [10, 20, 50, 100, 150, 200, 300, 400]#[700, 800, 900, 1000, 1500]
+    # שינוי המספרים כדי שיתאימו לכמות המצבים האמיתית שיש בחממה
+    k_values_to_test = [5, 10, 20, 30, 40, 50, 70, 100, 120, 131]
     inertias = []
 
     # בודקים כמה "טעות" יש בכל בחירה של מספר מצבים
@@ -92,7 +92,7 @@ def train_plant_agent():
     ###########################################
 
     # ג. K-Means
-    NUM_STATES = 400
+    NUM_STATES = 121 # todo check by the graph
     kmeans = KMeans(n_clusters=NUM_STATES, random_state=42, n_init=10)
 
     # מקבלים לאיזה אשכול שייכת כל שורה
@@ -109,9 +109,9 @@ def train_plant_agent():
     # ==============================================================================
     print("Building MDP directly from K-Means states...")
 
-    mdp_model = PlantMDPCluster(  # <--- שימוש במחלקה החדשה
+    mdp_model = PlantMDPCluster(
         data_path=temp_file,
-        state_cols=state_cols,  # <--- מעבירים את רשימת העמודות! בלי bounds ו-granularity
+        state_cols=state_cols,
         action_col='action_discrete',
         weight_col='start_weight'
     )
@@ -133,10 +133,9 @@ def train_plant_agent():
         next_state_idx = np.random.choice(len(candidates), p=probs)
         next_state = candidates[next_state_idx]
 
-        current_weight = state[0]
-        next_weight = next_state[0]
+        # שליפת הריוורד הממוצע (בגרמים) עבור הקלאסטר הנוכחי והפעולה
+        reward = mdp_model.expected_rewards.get(str((state, action)), 0)
 
-        reward = next_weight - current_weight
         return next_state, reward
 
     # ==============================================================================
@@ -145,7 +144,6 @@ def train_plant_agent():
     print(f"\nStarting Q-Learning Execution for {target_soil}...")
 
     THRESHOLD = 1e-4
-    # קריאה לפונקציה המבודדת מתוך הקובץ q_learning_algo.py
     Q_table, convergence_history = q_learning(
         mdp_model=mdp_model,
         env_step_func=get_env_step,
@@ -161,58 +159,20 @@ def train_plant_agent():
     # ==============================================================================
     print("Generating convergence plot...")
 
-    # plt.figure(figsize=(12, 6))
-    #
-    # window_size = 100
-    # smoothed_history = pd.Series(convergence_history).rolling(window=window_size, min_periods=1).mean()
-    #
-    # # 1. מציירים את הנתונים הגולמיים אבל חלש חלש ברקע (כדי שיראו שיש רעש)
-    # plt.plot(convergence_history, color='cornflowerblue', alpha=0.2, label='Raw Delta (Noisy)')
-    #
-    # # 2. מציירים את הממוצע הנע - קו כהה, עבה וברור!
-    # plt.plot(smoothed_history, color='navy', linewidth=2, label=f'Moving Average ({window_size} episodes)')
-    #
-    # # קו אדום מקווקו המייצג את סף ההתכנסות שלנו
-    # plt.axhline(y=THRESHOLD, color='red', linestyle='--', linewidth=2, label=f'Convergence Threshold ({THRESHOLD})')
-    #
-    # plt.title(f'Q-Learning Convergence for {target_soil} Soil', fontsize=16)
-    # plt.xlabel('Episodes', fontsize=14)
-    # plt.ylabel('Max Delta in Q-values', fontsize=14)
-    #
-    # # אפשר לחזור לסקאלה רגילה אם הממוצע הנע מחליק את זה מספיק,
-    # # או להשאיר את ה-symlog אם זה עדיין קופצני. ננסה symlog עדין:
-    # plt.yscale('symlog', linthresh=THRESHOLD)
-    #
-    # plt.grid(True, which="both", ls="--", alpha=0.5)
-    # plt.legend()
-    #
-    # # שמירת הגרף כתמונה
-    # plot_filename = f"convergence_plot_{target_soil}_smoothed.png"
-    # plt.savefig(plot_filename, dpi=300)
-    # print(f"Plot saved as {plot_filename}")
-
     plt.figure(figsize=(10, 6))
-
-    # ציור ההיסטוריה בסקאלה רגילה (ליניארית)
     plt.plot(convergence_history, color='blue', alpha=0.5, label='Max Q-value Change (Delta)')
-
-    # קו אדום מקווקו המייצג את סף ההתכנסות שלנו
     plt.axhline(y=THRESHOLD, color='red', linestyle='--', label=f'Convergence Threshold ({THRESHOLD})')
 
-    plt.title(f'Q-Learning Convergence for {target_soil} Soil', fontsize=14)
+    plt.title(f'Q-Learning Convergence for {target_soil} Soil (K-Means)', fontsize=14)
     plt.xlabel('iteration', fontsize=12)
     plt.ylabel('Max Delta (Change) in Q-values', fontsize=12)
-
-    # plt.yscale('symlog', linthresh=THRESHOLD)
 
     plt.grid(True, which="both", ls="--", alpha=0.5)
     plt.legend()
 
-    # שמירת הגרף כתמונה
-    plot_filename = f"convergence_plot_{target_soil}.png"
+    plot_filename = f"convergence_plot_{target_soil}_kmeans.png"
     plt.savefig(plot_filename, dpi=300)
     print(f"Plot saved as {plot_filename}")
-    # plt.show() # הסר את סימן ההערה אם אתה רוצה שהגרף יקפוץ לך על המסך בסיום ההרצה
 
     # ==============================================================================
     # 6. שמירת המודל
@@ -225,7 +185,8 @@ def train_plant_agent():
         "soil_type": target_soil,
         "num_actions": NUM_ACTIONS,
         "clustering_method": "K-Means",
-        "num_states": NUM_STATES,"optimal_policy": {s: max(Q_table[s], key=Q_table[s].get) for s in mdp_model.states if Q_table[s]}
+        "num_states": NUM_STATES,
+        "optimal_policy": {s: max(Q_table[s], key=Q_table[s].get) for s in mdp_model.states if Q_table[s]}
     }
 
     with open(model_filename, "wb") as f:
