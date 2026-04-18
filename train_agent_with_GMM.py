@@ -82,8 +82,8 @@ def train_plant_agent():
         return
 
     # --- סינון לפי סוג קרקע ---
-    ACTION_CALC_METHOD = 'DT_NORMALIZED'
-    target_soil = 'sand'  # todo change to soil/sand
+    ACTION_CALC_METHOD = 'DT_GRANULARITY' #EVAPORATION_PERCENTAGE, DT_NORMALIZED, DT_GRANULARITY
+    target_soil = 'soil'  # todo change to soil/sand
     print(f"Filtering data for soil type: '{target_soil}'...")
 
     if 'soil_type' in df.columns:
@@ -156,7 +156,7 @@ def train_plant_agent():
     ###########################################
 
     # ג. GMM
-    NUM_STATES = 500 #sand 500 #soil 121 # todo check by the graph
+    NUM_STATES = 121 #sand 500 #soil 121 # todo check by the graph
     print(f"Running final GMM with {NUM_STATES} components...")
     # visualize_clustering_process(df, state_cols, NUM_STATES, target_soil) #todo fix this visualize
 
@@ -170,17 +170,22 @@ def train_plant_agent():
 
     df[state_cols] = centroids_real[cluster_labels]
 
+    WEIGHT_GRAN_FOR_STATE = 1
+    df['weight_state'] = (df['start_weight'] / WEIGHT_GRAN_FOR_STATE).round() * WEIGHT_GRAN_FOR_STATE
+
     temp_file = "temp_data_for_training.parquet"
     df.to_parquet(temp_file)
 
     # ==============================================================================
     # 2. בניית המודל (MDP Construction)
     # ==============================================================================
-    print("Building MDP directly from GMM states...")
+    print("Building MDP directly from GMM states X Weight...")
+
+    mdp_state_cols = state_cols + ['weight_state']
 
     mdp_model = PlantMDPCluster(  # <--- שימוש במחלקה החדשה
         data_path=temp_file,
-        state_cols=state_cols,  # <--- רשימת העמודות הטהורה
+        state_cols=mdp_state_cols,  # <--- רשימת העמודות הטהורה
         action_col='action_discrete',
         weight_col='start_weight'
     )
@@ -245,7 +250,7 @@ def train_plant_agent():
     # ==============================================================================
     # 6. שמירת המודל
     # ==============================================================================
-    model_filename = f"q_agent_{target_soil}_gmm_{NUM_STATES}_act_{NUM_ACTIONS}_{ACTION_CALC_METHOD}.pkl"
+    model_filename = f"q_agent_{target_soil}_gmm_{NUM_STATES}_act_{NUM_ACTIONS}_{ACTION_CALC_METHOD}_new_state.pkl"
     print(f"\nSaving model to {model_filename}...")
 
     model_data = {
@@ -255,7 +260,8 @@ def train_plant_agent():
         "action_method": ACTION_CALC_METHOD,
         "clustering_method": "GMM",
         "num_states": NUM_STATES,
-        "optimal_policy": {s: max(Q_table[s], key=Q_table[s].get) for s in mdp_model.states if Q_table[s]}
+        "optimal_policy": {s: max(Q_table[s], key=Q_table[s].get) for s in mdp_model.states if Q_table[s]},
+        "expected_rewards": mdp_model.expected_rewards
     }
 
     with open(model_filename, "wb") as f:
