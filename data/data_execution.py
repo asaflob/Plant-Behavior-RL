@@ -575,6 +575,14 @@ def finalize_data_for_mdp():
 
     dropped_count = initial_count - len(df_clean)
     print(f"Dropped {dropped_count} rows with missing 'dt'.")
+
+    # dt < 0 is physically impossible (transpiration can't be negative).
+    # Day 9 of exp 202 produced 3 such rows across plants 12594/12614/12644 —
+    # a sensor/aggregation glitch, not a real plant condition.
+    before_neg = len(df_clean)
+    df_clean = df_clean[df_clean['dt'] >= 0]
+    dropped_neg = before_neg - len(df_clean)
+    print(f"Dropped {dropped_neg} rows with negative 'dt'.")
     print(f"Final dataset size: {len(df_clean)} daily records.")
 
     # 3. שמירה בשם הסופי שבו נשתמש ב-MDP
@@ -706,6 +714,12 @@ def generate_daily_summary_with_temp(source_file='tomato_processed_data.parquet'
 
     dropped = initial_len - len(final_df)
     print(f"Dropped {dropped} daily records due to missing data.")
+
+    # Drop physically impossible negative transpiration (see finalize_data_for_mdp).
+    before_neg = len(final_df)
+    final_df = final_df[final_df['dt'] >= 0]
+    dropped_neg = before_neg - len(final_df)
+    print(f"Dropped {dropped_neg} daily records with negative 'dt'.")
     print(f"Final dataset size: {len(final_df)} daily records.")
 
     print(f"\nSaving to {output_file}...")
