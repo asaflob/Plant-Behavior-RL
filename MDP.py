@@ -9,11 +9,14 @@ from scipy.sparse import csr_matrix
 
 
 class PlantMDP:
-    def __init__(self, data_path, state_map, action_col, weight_col='start_weight'):
+    def __init__(self, data_path, state_map, action_col, weight_col='start_weight',
+                 reward_clip=100.0, require_consecutive_days=True):
         self.data_path = data_path
         self.state_map = state_map
         self.action_col = action_col
         self.weight_col_name = weight_col  # השם של העמודה בדאטה המקורי שמייצגת משקל
+        self.reward_clip = reward_clip
+        self.require_consecutive_days = require_consecutive_days
 
         # המפתחות של המילון state_map הם שמות העמודות שאנחנו רוצים ב-State
         self.state_cols = list(state_map.keys())
@@ -26,6 +29,8 @@ class PlantMDP:
         self.observations = []
         self.expected_rewards = {}
         self.transitions = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
+        self.skipped_gaps = 0
+        self.clipped_rewards = 0
 
     def _build_states(self):
         axis_values = []
@@ -49,6 +54,8 @@ class PlantMDP:
 
         reward_accumulator = defaultdict(list)
 
+        has_day_num = 'day_num' in df.columns
+
         # === שינוי קריטי: מעבר על כל צמח בנפרד ===
         # זה מונע מעבר שגוי בין סוף צמח אחד להתחלה של צמח אחר
         for plant_id, plant_df in df.groupby('unique_id'):
@@ -60,6 +67,7 @@ class PlantMDP:
             # 1. מכינים את ה-States (מעוגלים כבר מהקובץ)
             states_data = plant_df[self.state_cols].values
             actions_data = plant_df[self.action_col].values
+            day_nums = plant_df['day_num'].values if has_day_num else None
 
             # אנחנו מניחים שהשמות ב-state_cols תואמים לעמודות ב-DF (כמו start_weight)
             # נאתר איפה נמצא המשקל בתוך ה-State כדי לחשב Reward
@@ -71,6 +79,12 @@ class PlantMDP:
 
             # לולאה על ימי הצמח (עד יום אחד לפני הסוף)
             for i in range(len(plant_df) - 1):
+                # Skip over multi-day gaps (missing days mid-experiment)
+                if self.require_consecutive_days and day_nums is not None:
+                    if day_nums[i + 1] - day_nums[i] != 1:
+                        self.skipped_gaps += 1
+                        continue
+
                 curr_s = tuple(states_data[i])
                 next_s = tuple(states_data[i + 1])
                 action = actions_data[i]
@@ -86,6 +100,12 @@ class PlantMDP:
                 # 2. Record reward (Weight Gain)
                 # אנחנו משתמשים באינדקס שמצאנו כדי לשלוף את המשקל מתוך ה-State
                 gain = next_s[weight_idx] - curr_s[weight_idx]
+
+                # Clip sensor-glitch rewards so one outlier doesn't poison R(s,a).
+                if self.reward_clip is not None and abs(gain) > self.reward_clip:
+                    self.clipped_rewards += 1
+                    gain = float(np.clip(gain, -self.reward_clip, self.reward_clip))
+
                 reward_accumulator[(curr_s, action)].append(gain)
 
         # 3. Calculate Expected Rewards

@@ -108,6 +108,14 @@ def train_plant_agent():
         df['action_discrete'] = pd.cut(df['stomatal_opening'], bins=NUM_ACTIONS, labels=False)
 
     elif ACTION_CALC_METHOD == 'EVAPORATION_PERCENTAGE':
+        # Drop rows where pnw is non-positive — otherwise 100*dt/pnw explodes
+        # (we saw ~287 such rows with pnw<=0 producing E% in the ±40,000% range).
+        PNW_MIN = 1.0  # grams
+        bad_pnw = (df['pnw'].isna()) | (df['pnw'] <= PNW_MIN)
+        if bad_pnw.any():
+            print(f"  Dropping {int(bad_pnw.sum())} rows with pnw <= {PNW_MIN}")
+            df = df[~bad_pnw].copy()
+
         df['evap_pct'] = (df['dt'] / df['pnw']) * 100
 
         df['evap_pct'] = df['evap_pct'].replace([np.inf, -np.inf], np.nan)

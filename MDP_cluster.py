@@ -6,11 +6,18 @@ from collections import defaultdict
 from scipy.sparse import csr_matrix
 
 class PlantMDPCluster:
-    def __init__(self, data_path, state_cols, action_col, weight_col='start_weight'):
+    def __init__(self, data_path, state_cols, action_col, weight_col='start_weight',
+                 reward_clip=100.0, require_consecutive_days=True):
         self.data_path = data_path
         self.state_cols = state_cols
         self.action_col = action_col
         self.weight_col_name = weight_col
+        # Clip |reward| to this many grams to suppress sensor glitches / system events.
+        # None disables clipping.
+        self.reward_clip = reward_clip
+        # Skip transitions where day_num jumps by more than 1 (avoid treating a 6-day
+        # gap as a single overnight transition).
+        self.require_consecutive_days = require_consecutive_days
 
         self.df = pd.read_parquet(self.data_path)
         self.states = self._extract_unique_states()
@@ -19,6 +26,8 @@ class PlantMDPCluster:
         self.observations = []
         self.expected_rewards = {}
         self.transitions = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
+        self.skipped_gaps = 0
+        self.clipped_rewards = 0
 
     def _extract_unique_states(self):
         unique_states_df = self.df[self.state_cols].drop_duplicates()
@@ -31,12 +40,21 @@ class PlantMDPCluster:
 
         reward_accumulator = defaultdict(list)
 
+        has_day_num = 'day_num' in self.df.columns
+
         for plant_id, plant_df in self.df.groupby('unique_id'):
             states_data = plant_df[self.state_cols].values
             actions_data = plant_df[self.action_col].values
             weights_data = plant_df[self.weight_col_name].values
+            day_nums = plant_df['day_num'].values if has_day_num else None
 
             for i in range(len(plant_df) - 1):
+                # Skip over multi-day gaps (missing days mid-experiment)
+                if self.require_consecutive_days and day_nums is not None:
+                    if day_nums[i + 1] - day_nums[i] != 1:
+                        self.skipped_gaps += 1
+                        continue
+
                 # New State = [cluster-state] X Weight
                 new_state = tuple(states_data[i])
                 next_new_state = tuple(states_data[i + 1])
@@ -50,6 +68,11 @@ class PlantMDPCluster:
 
                 # Reward = Weight at beginning of day i+1 - Weight at the beginning of day i
                 gain = weights_data[i + 1] - weights_data[i]
+
+                # Clip sensor-glitch rewards so one outlier doesn't poison R(S,a).
+                if self.reward_clip is not None and abs(gain) > self.reward_clip:
+                    self.clipped_rewards += 1
+                    gain = float(np.clip(gain, -self.reward_clip, self.reward_clip))
 
                 # S \in NewState: אוספים את כל נקודות המידע שחולקות את אותו New State בדיוק
                 reward_accumulator[(new_state, action)].append(gain)
@@ -98,3 +121,7 @@ class PlantMDPCluster:
         for i, col_name in enumerate(self.state_cols):
             unique_values_visited = set(state[i] for state in observed_states)
             print(f"{col_name} has {len(unique_values_visited)} unique values in visited states.")
+
+        print("\n--- Data Hygiene ---")
+        print(f"Transitions skipped (day_num gap > 1): {self.skipped_gaps}")
+        print(f"Rewards clipped (|gain| > {self.reward_clip}): {self.clipped_rewards}")
