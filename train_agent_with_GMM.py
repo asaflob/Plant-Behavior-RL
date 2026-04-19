@@ -66,7 +66,7 @@ def train_plant_agent():
     # 0. הגדרות (Configuration)
     # ==============================================================================
 
-    NUM_ACTIONS = 50
+    NUM_ACTIONS = 100
 
     # שם הקובץ הסופי שיצרנו ב-Pipeline
     input_file = os.path.join("data", "tomato_mdp_final_with_pnw.parquet")
@@ -82,8 +82,8 @@ def train_plant_agent():
         return
 
     # --- סינון לפי סוג קרקע ---
-    ACTION_CALC_METHOD = 'DT_GRANULARITY' #EVAPORATION_PERCENTAGE, DT_NORMALIZED, DT_GRANULARITY
-    target_soil = 'soil'  # todo change to soil/sand
+    ACTION_CALC_METHOD = 'EVAPORATION_PERCENTAGE' #EVAPORATION_PERCENTAGE, DT_NORMALIZED, DT_GRANULARITY
+    target_soil = 'sand'  # todo change to soil/sand
     print(f"Filtering data for soil type: '{target_soil}'...")
 
     if 'soil_type' in df.columns:
@@ -170,7 +170,7 @@ def train_plant_agent():
     ###########################################
 
     # ג. GMM
-    NUM_STATES = 121 #sand 500 #soil 121 # todo check by the graph
+    NUM_STATES = 500 #sand 500 #soil 121 # todo check by the graph
     print(f"Running final GMM with {NUM_STATES} components...")
     # visualize_clustering_process(df, state_cols, NUM_STATES, target_soil) #todo fix this visualize
 

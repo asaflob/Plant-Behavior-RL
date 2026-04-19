@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from datetime import timedelta
 import os
+import matplotlib.pyplot as plt
 
 # הגדרת נתיב לקובץ - שים לב לשנות את זה לנתיב במחשב שלך
 FILE_PATH = 'tomato_raw_data_v2.parquet'
@@ -913,8 +914,169 @@ def generate_daily_data_with_pnw():
     print("\nPreview of new columns:")
     print(merged_df[['unique_id', 'day_num', 'dt', 'pnw']].head())
 
+
+def generate_plant_duration_graphs():
+    # קריאת הקובץ היומי בלבד
+    data_file = os.path.join("tomato_mdp_final_with_pnw.parquet")
+
+    if not os.path.exists(data_file):
+        print(f"Error: File '{data_file}' not found.")
+        return
+
+    print("Loading data...")
+    df = pd.read_parquet(data_file)
+
+    # ניקוי רווחים משם האדמה
+    df['soil_type'] = df['soil_type'].astype(str).str.strip()
+
+    for target_soil in ['sand', 'soil']:
+        df_soil = df[df['soil_type'] == target_soil]
+
+        if df_soil.empty:
+            continue
+
+        print(f"Generating plots for {target_soil.upper()}...")
+
+        # חישוב כמה ימים ייחודיים יש לכל צמח
+        plant_days = df_soil.groupby('unique_id')['day_num'].nunique().sort_values(ascending=False)
+
+        # --- חישוב החציון (Median) ---
+        median_days = plant_days.median()
+
+        # הגדרת צבעים שונים לכל אדמה שיהיה ברור בעין
+        bar_color = 'sandybrown' if target_soil == 'sand' else 'sienna'
+        line_color = 'darkorange' if target_soil == 'sand' else 'saddlebrown'
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+
+        # ==========================================
+        # גרף 1: כל הצמחים מסודרים לפי כמות הימים
+        # ==========================================
+        ax1.bar(range(len(plant_days)), plant_days.values, color=bar_color, edgecolor='black', alpha=0.7)
+
+        # הוספת קו המייצג את החציון
+        ax1.axhline(y=median_days, color='red', linestyle='--', linewidth=2.5, label=f'Median: {int(median_days)} Days')
+
+        # --- תוספת: כתיבת המספר על הקו האופקי ---
+        ax1.text(x=len(plant_days) / 2, y=median_days, s=f'{int(median_days)}',
+                 color='red', fontsize=14, fontweight='bold',
+                 ha='center', va='center',
+                 bbox=dict(facecolor='white', alpha=0.8, edgecolor='red', boxstyle='round,pad=0.3'))
+
+        ax1.set_title(f'Plant Durations in {target_soil.upper()} (All Plants)', fontsize=15, fontweight='bold')
+        ax1.set_xlabel('Plant Index (Sorted by length)', fontsize=12)
+        ax1.set_ylabel('Total Days Available', fontsize=12)
+        ax1.legend(fontsize=12)
+        ax1.grid(axis='y', linestyle='--', alpha=0.5)
+
+        # ==========================================
+        # גרף 2: גרף "זמינות נתונים" (Data Retention)
+        # ==========================================
+        max_day = plant_days.max()
+        days_range = range(1, max_day + 1)
+
+        # עבור כל יום, בודקים כמה צמחים "שרדו" עד אליו
+        plants_remaining = [sum(plant_days >= d) for d in days_range]
+
+        ax2.plot(days_range, plants_remaining, color=line_color, marker='o', markersize=6, linewidth=3)
+        ax2.fill_between(days_range, plants_remaining, color=bar_color, alpha=0.2)
+
+        # הוספת קו אנכי בגרף ההישרדות שמראה איפה החציון
+        ax2.axvline(x=median_days, color='red', linestyle='--', linewidth=2.5, label=f'Median Day ({int(median_days)})')
+
+        # --- תוספת: כתיבת המספר על הקו האנכי ---
+        ax2.text(x=median_days, y=max(plants_remaining) / 2, s=f'{int(median_days)}',
+                 color='red', fontsize=14, fontweight='bold',
+                 ha='center', va='center',
+                 bbox=dict(facecolor='white', alpha=0.8, edgecolor='red', boxstyle='round,pad=0.3'))
+
+        ax2.set_title(f'Data Retention Curve: {target_soil.upper()}', fontsize=15, fontweight='bold')
+        ax2.set_xlabel('Day in Experiment', fontsize=12)
+        ax2.set_ylabel('Number of Active Plants', fontsize=12)
+        ax2.legend(fontsize=12)
+        ax2.grid(True, linestyle='--', alpha=0.5)
+
+        # הוספת טקסט קטן על הגרף כל 5 ימים כדי שיהיה קל לקרוא
+        for d, count in zip(days_range, plants_remaining):
+            if d % 5 == 0 or d == 1:
+                ax2.annotate(f"{count}", (d, count), textcoords="offset points", xytext=(0, 10), ha='center',
+                             fontsize=10, fontweight='bold')
+
+        plt.tight_layout()
+
+        # שמירה כקובץ PNG איכותי
+        plot_filename = f"duration_analysis_{target_soil}.png"
+        plt.savefig(plot_filename, dpi=300)
+        print(f"Saved plot as '{plot_filename}'")
+
+        plt.show()
+
+
+def generate_pnw_distribution_graphs():
+    # קריאת הקובץ היומי בלבד
+    data_file = os.path.join("data", "tomato_mdp_final_with_pnw.parquet")
+
+    # אם הקובץ לא בתוך תיקיית data, ננסה בתיקייה הנוכחית
+    if not os.path.exists(data_file):
+        data_file = "tomato_mdp_final_with_pnw.parquet"
+        if not os.path.exists(data_file):
+            print(f"Error: File '{data_file}' not found.")
+            return
+
+    print("Loading data...")
+    df = pd.read_parquet(data_file)
+
+    # ניקוי רווחים משם האדמה
+    df['soil_type'] = df['soil_type'].astype(str).str.strip()
+
+    for target_soil in ['sand', 'soil']:
+        df_soil = df[df['soil_type'] == target_soil]
+
+        if df_soil.empty:
+            continue
+
+        print(f"Generating PNW plots for {target_soil.upper()}...")
+
+        # חישוב PNW ממוצע לכל צמח, וסידור מהגדול לקטן
+        plant_pnw = df_soil.groupby('unique_id')['pnw'].mean().sort_values(ascending=False)
+
+        # הגדרת צבעים שונים לכל אדמה
+        bar_color = 'sandybrown' if target_soil == 'sand' else 'sienna'
+        hist_color = 'darkorange' if target_soil == 'sand' else 'saddlebrown'
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+
+        # ==========================================
+        # גרף 1: ממוצע PNW לכל צמח בנפרד (מסודר יורד)
+        # ==========================================
+        ax1.bar(range(len(plant_pnw)), plant_pnw.values, color=bar_color, edgecolor='black', alpha=0.7)
+
+        ax1.set_title(f'Average PNW per Plant in {target_soil.upper()}', fontsize=15, fontweight='bold')
+        ax1.set_xlabel('Plant Index (Sorted by PNW)', fontsize=12)
+        ax1.set_ylabel('Average PNW (grams)', fontsize=12)
+        ax1.grid(axis='y', linestyle='--', alpha=0.5)
+
+        # ==========================================
+        # גרף 2: היסטוגרמה של כלל ערכי ה-PNW באדמה זו (התפלגות)
+        # ==========================================
+        # זורקים ערכי NaN אם ישנם ומחלקים ל-30 סלים (bins)
+        pnw_values = df_soil['pnw'].dropna()
+
+        ax2.hist(pnw_values, bins=30, color=hist_color, edgecolor='black', alpha=0.7)
+
+        ax2.set_title(f'PNW Overall Distribution in {target_soil.upper()}', fontsize=15, fontweight='bold')
+        ax2.set_xlabel('PNW Value (grams)', fontsize=12)
+        # --- התיקון שביקשת: שינוי שם הציר ל-counter ---
+        ax2.set_ylabel('counter', fontsize=12)
+        ax2.grid(axis='y', linestyle='--', alpha=0.5)
+
+        plt.tight_layout()
+
+        # שמירה כקובץ PNG איכותי
+        plot_filename = f"pnw_distribution_{target_soil}.png"
+        plt.savefig(plot_filename, dpi=300)
+        print(f"Saved plot as '{plot_filename}'")
+
+        plt.show()
 if __name__ == "__main__":
-    generate_daily_data_with_pnw()
-    # intermediate_file = 'tomato_raw_data_v2.parquet'
-    # df = pd.read_parquet(intermediate_file)
-    # print(df.columns.tolist())
+    generate_pnw_distribution_graphs()
