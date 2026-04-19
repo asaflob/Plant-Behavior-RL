@@ -1,8 +1,3 @@
-Here is a complete, professional `README.md` tailored exactly to your project's structure and the code you provided. You can copy this directly into your GitHub repository.
-
-***
-
-```markdown
 # Explaining Plant Behavior via Reinforcement Learning
 
 Welcome to the **Plant Behavior RL** repository! This project models a plant as an intelligent Reinforcement Learning (RL) agent. By analyzing seven years of real-world greenhouse data, we aim to understand and explain the critical trade-off plants make: opening their stomata to absorb CO₂ (maximizing energy/reward) versus preventing water loss via transpiration (minimizing cost).
@@ -80,4 +75,3 @@ python models_plant_vs_model.py
 
 ---
 *Developed by Team 118: Asaf Vitenshtein & Dor Snapiri at the Hebrew University of Jerusalem.*
-```
