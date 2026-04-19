@@ -121,7 +121,13 @@ def train_plant_agent():
         df['evap_pct'] = df['evap_pct'].replace([np.inf, -np.inf], np.nan)
         df = df.dropna(subset=['evap_pct'])
 
-        df['action_discrete'] = pd.cut(df['evap_pct'], bins=NUM_ACTIONS, labels=False)
+        # evap_pct stays long-tailed even after the pnw>MIN filter, so equal-width
+        # pd.cut wastes ~half the buckets (e.g. only 22/50 filled on soil). qcut
+        # assigns equal counts per bin — all NUM_ACTIONS actions get real data.
+        # duplicates='drop' handles ties at identical bin edges.
+        df['action_discrete'] = pd.qcut(
+            df['evap_pct'], q=NUM_ACTIONS, labels=False, duplicates='drop'
+        )
 
     elif ACTION_CALC_METHOD == 'DT_GRANULARITY':
         df['action_discrete'] = pd.cut(df['dt'], bins=NUM_ACTIONS, labels=False)
