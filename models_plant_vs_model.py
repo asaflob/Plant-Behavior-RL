@@ -904,22 +904,19 @@ def analyze_experiment_prediction_final_evaporation_percentage_new(model_file):
     plt.show()
 
 
-def analyze_experiment_prediction_final_evaporation_percentage_all_plants(model_file):
-    # ==========================================
-    # 1. הגדרות וטעינה
-    # ==========================================
+# =====================================================================
+# 1. פונקציית טעינה ועיבוד נתונים
+# =====================================================================
+def load_and_preprocess_data(model_file):
     data_file = os.path.join("data", "tomato_mdp_final_with_pnw.parquet")
     raw_data_file = os.path.join("data", "tomato_raw_data_v2.parquet")
 
     if not os.path.exists(model_file):
-        print(f"Error: Model file '{model_file}' not found.")
-        return
+        raise FileNotFoundError(f"Model file '{model_file}' not found.")
     if not os.path.exists(data_file):
-        print(f"Error: Data file '{data_file}' not found.")
-        return
+        raise FileNotFoundError(f"Data file '{data_file}' not found.")
     if not os.path.exists(raw_data_file):
-        print(f"Error: Raw Data file '{raw_data_file}' not found.")
-        return
+        raise FileNotFoundError(f"Raw Data file '{raw_data_file}' not found.")
 
     print(f"Loading Agent: {model_file}...")
     with open(model_file, 'rb') as f:
@@ -932,46 +929,23 @@ def analyze_experiment_prediction_final_evaporation_percentage_all_plants(model_
     expected_rewards = agent_data.get('expected_rewards', {})
     is_cluster_model = 'clustering_method' in agent_data
 
-    # --- הגדרת החציון לפי סוג האדמה ---
-    median_day_value = 17 if target_soil == 'sand' else 12
-
     print(f"Agent Config -> Soil: {target_soil}, Actions: {NUM_ACTIONS}, Method: {action_method}")
 
     print("Loading Data...")
     df = pd.read_parquet(data_file)
     df = df[df['soil_type'].astype(str).str.strip() == target_soil]
 
-    # ============================================================
-    # --- הוספת עמודת exp_ID מתוך הקובץ המקורי (מיזוג חכם ובטוח) ---
-    # ============================================================
     print("Ensuring exp_ID is in the data...")
-
     if 'exp_ID' not in df.columns and 'exp_id' not in df.columns:
-        print("Merging experiment data from processed data...")
         df_raw = pd.read_parquet(raw_data_file)
-
-        raw_col_name = None
-        if 'exp_ID' in df_raw.columns:
-            raw_col_name = 'exp_ID'
-        elif 'exp_id' in df_raw.columns:
-            raw_col_name = 'exp_id'
-
-        if raw_col_name is None:
-            print("CRITICAL ERROR: Neither 'exp_ID' nor 'exp_id' found in the raw data file.")
-            return
-
+        raw_col_name = 'exp_ID' if 'exp_ID' in df_raw.columns else 'exp_id'
         df_raw = df_raw[['unique_id', raw_col_name]].drop_duplicates()
         df = df.merge(df_raw, on='unique_id', how='inner')
-
-        if raw_col_name == 'exp_id':
-            df = df.rename(columns={'exp_id': 'exp_ID'})
-
+        df = df.rename(columns={raw_col_name: 'exp_ID'})
     elif 'exp_id' in df.columns:
         df = df.rename(columns={'exp_id': 'exp_ID'})
 
-    # ============================================================
-    # === יצירת הפעולות האמיתיות ===
-    # ============================================================
+    # יצירת פעולות (עם תיקון חריגים)
     if action_method == 'DT_NORMALIZED' or action_method == 'DT_GRANULARITY':
         min_dt = df['dt'].min()
         max_dt = df['dt'].max()
@@ -982,135 +956,129 @@ def analyze_experiment_prediction_final_evaporation_percentage_all_plants(model_
         df['evap_pct'] = (df['dt'] / df['pnw']) * 100
         df['evap_pct'] = df['evap_pct'].replace([np.inf, -np.inf], np.nan)
         df = df.dropna(subset=['evap_pct'])
+        upper_limit = df['evap_pct'].quantile(0.99)
+        df['evap_pct'] = df['evap_pct'].clip(lower=0, upper=upper_limit)
         df['real_action_discrete'] = pd.cut(df['evap_pct'], bins=NUM_ACTIONS, labels=False)
     else:
-        print("Error: Unknown action method.")
-        return
+        raise ValueError("Unknown action method.")
 
     df = df.dropna(subset=['real_action_discrete'])
 
-    # ==========================================
-    # 2. בחירת כל הצמחים הרלוונטיים (מכל הניסויים)
-    # ==========================================
-    plant_counts = df['unique_id'].value_counts()
-    selected_plants = plant_counts[plant_counts >= 10].index.tolist()
+    return df, policy, expected_rewards, is_cluster_model, NUM_ACTIONS, target_soil, action_method
 
-    if not selected_plants:
-        print("No valid plants (with >= 10 days) found.")
-        return
+# =====================================================================
+# 2. פונקציית יצירת צמח ממוצע והשוואה לאייג'נט (לכל ניסוי)
+# =====================================================================
+def evaluate_virtual_plant(exp_df, policy, expected_rewards, is_cluster_model, known_states):
+    # חישוב אקלים ממוצע לניסוי להדפסה
+    exp_avg_temp = exp_df['avg_temp'].mean()
+    exp_avg_hum = exp_df['avg_humidity'].mean()
 
-    print(f"\nSelected {len(selected_plants)} plants across all experiments.")
+    # סידור וחישוב ריוורד לכל צמח
+    exp_df = exp_df.sort_values(['unique_id', 'day_num'])
+    exp_df['Real_Reward_Daily'] = exp_df.groupby('unique_id')['start_weight'].shift(-1) - exp_df['start_weight']
+    exp_df['Real_Reward_Daily'] = exp_df['Real_Reward_Daily'].fillna(0)
 
-    # ==========================================
-    # 3. הריצה יום אחרי יום (על כל הצמחים שנבחרו)
-    # ==========================================
+    if 'avg_par' not in exp_df.columns:
+        exp_df['avg_par'] = 0
+
+    # יצירת ה"צמח הממוצע" ליום
+    daily_avg_df = exp_df.groupby('day_num').agg({
+        'start_weight': 'mean',
+        'avg_temp': 'mean',
+        'avg_humidity': 'mean',
+        'avg_par': 'mean',
+        'real_action_discrete': 'mean',
+        'Real_Reward_Daily': 'mean'
+    }).reset_index()
+
     all_results = []
     correct_predictions = 0
     total_known_states = 0
-    known_states = list(policy.keys())
 
-    for pid in selected_plants:
-        plant_df = df[df['unique_id'] == pid].sort_values('day_num').copy()
-        plant_df['Real_Reward_Daily'] = plant_df['start_weight'].shift(-1) - plant_df['start_weight']
-        plant_df['Real_Reward_Daily'] = plant_df['Real_Reward_Daily'].fillna(0)
+    for _, row in daily_avg_df.iterrows():
+        day = int(row['day_num'])
+        w_real = row['start_weight']
+        t_real = row['avg_temp']
+        h_real = row['avg_humidity']
+        p_real = row['avg_par']
 
-        for _, row in plant_df.iterrows():
-            w_real = row['start_weight']
-            t_real = row['avg_temp']
-            h_real = row['avg_humidity']
-            p_real = row.get('avg_par', 0)
+        real_reward_daily = row['Real_Reward_Daily']
+        real_action = row['real_action_discrete']
 
-            real_reward_daily = row['Real_Reward_Daily']
-            real_action = int(row['real_action_discrete'])
+        if is_cluster_model:
+            current_climate = np.array([t_real, h_real, p_real])
+            unique_climates = list(set([(s[0], s[1], s[2]) for s in known_states]))
+            closest_climate = min(unique_climates, key=lambda c: np.sum((np.array(c) - current_climate) ** 2))
+            states_with_this_climate = [s for s in known_states if (s[0], s[1], s[2]) == closest_climate]
+            closest_state = min(states_with_this_climate, key=lambda s: abs(s[3] - w_real))
+            state = closest_state
+        else:
+            state = None
 
-            if is_cluster_model:
-                current_climate = np.array([t_real, h_real, p_real])
-                unique_climates = list(set([(s[0], s[1], s[2]) for s in known_states]))
-                closest_climate = min(unique_climates, key=lambda c: np.sum((np.array(c) - current_climate) ** 2))
-                states_with_this_climate = [s for s in known_states if (s[0], s[1], s[2]) == closest_climate]
-                closest_state = min(states_with_this_climate, key=lambda s: abs(s[3] - w_real))
-                state = closest_state
-            else:
-                state = None
+        if state in policy:
+            agent_action = policy[state]
+            total_known_states += 1
+            if agent_action == round(real_action):
+                correct_predictions += 1
+            search_key = (tuple(state), int(agent_action))
+            agent_reward_daily = expected_rewards.get(search_key, 0)
+        else:
+            agent_action = np.nan
+            agent_reward_daily = 0
 
-            if state in policy:
-                agent_action = policy[state]
-                total_known_states += 1
-                if agent_action == real_action:
-                    correct_predictions += 1
+        all_results.append({
+            'Day': day,
+            'Real_Action': real_action,
+            'Agent_Action': agent_action,
+            'Diff': abs(real_action - agent_action) if not pd.isna(agent_action) else None,
+            'Real_Reward': real_reward_daily,
+            'Agent_Reward': agent_reward_daily
+        })
 
-                search_key = (tuple(state), int(agent_action))
-                agent_reward_daily = expected_rewards.get(search_key, 0)
-            else:
-                agent_action = np.nan
-                agent_reward_daily = 0
-
-            all_results.append({
-                'Plant_ID': pid,
-                'Day': row['day_num'],
-                'Real_Action': real_action,
-                'Agent_Action': agent_action,
-                'Diff': abs(real_action - agent_action) if not pd.isna(agent_action) else None,
-                'Real_Reward': real_reward_daily,
-                'Agent_Reward': agent_reward_daily
-            })
-
-    # ==========================================
-    # סכימה וממוצע לפי ימים
-    # ==========================================
-    full_res_df = pd.DataFrame(all_results)
-
-    avg_res_df = full_res_df.groupby('Day').agg({
-        'Real_Action': 'mean',
-        'Agent_Action': 'mean',
-        'Diff': 'mean',
-        'Real_Reward': 'mean',
-        'Agent_Reward': 'mean'
-    }).reset_index()
+    avg_res_df = pd.DataFrame(all_results)
+    if avg_res_df.empty:
+        return None, None, 0, exp_avg_temp, exp_avg_hum
 
     avg_res_df['Real_Accumulated'] = avg_res_df['Real_Reward'].cumsum()
     avg_res_df['Agent_Accumulated'] = avg_res_df['Agent_Reward'].cumsum()
 
     valid_rows = avg_res_df.dropna(subset=['Agent_Action'])
-
-    if len(valid_rows) == 0:
-        print("CRITICAL: The Agent recognized NONE of the states.")
-        return
-
     accuracy = correct_predictions / total_known_states if total_known_states > 0 else 0
-    mae = valid_rows['Diff'].mean()
-    mse = (valid_rows['Diff'] ** 2).mean()
+
+    return avg_res_df, valid_rows, accuracy, exp_avg_temp, exp_avg_hum
+
+# =====================================================================
+# 3. פונקציית ויזואליזציה (ציור הגרפים)
+# =====================================================================
+def plot_experiment_results(exp_id_val, avg_res_df, valid_rows, NUM_ACTIONS, median_day_value, num_plants, accuracy):
+    mae = valid_rows['Diff'].mean() if not valid_rows.empty else 0
 
     stats_text = (
-        f"Averaged across {len(selected_plants)} Plants\n"
-        f"Method: {action_method}\n"
-        f"Total Avg Days: {len(avg_res_df)}\n"
+        f"Experiment: {exp_id_val}\n"
+        f"Modeled as 1 Virtual Plant (from {num_plants} actual plants)\n"
+        f"Total Days: {len(avg_res_df)}\n"
         f"Overall Accuracy: {accuracy:.1%}\n"
         f"MAE (Avg Error): {mae:.2f}\n"
-        f"Total Plant Avg Gain: {avg_res_df['Real_Accumulated'].iloc[-1]:.1f}g\n"
-        f"Total Agent Avg Gain: {avg_res_df['Agent_Accumulated'].iloc[-1]:.1f}g"
+        f"Total Plant Gain: {avg_res_df['Real_Accumulated'].iloc[-1]:.1f}g\n"
+        f"Total Agent Gain: {avg_res_df['Agent_Accumulated'].iloc[-1]:.1f}g"
     )
 
-    print(f"\n=== AVERAGE RESULTS ===\n{stats_text}")
-
-    # ==========================================
-    # 4. ויזואליזציה של הממוצעים הנפרדת + קו חציון
-    # ==========================================
     fig1, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={'height_ratios': [2, 1]})
 
-    # --- גרף 1: פעולות ---
     ax1.plot(avg_res_df['Day'], avg_res_df['Real_Action'], label='Average Real Plant', color='blue', marker='o',
              alpha=0.6, linewidth=2)
-    ax1.plot(avg_res_df['Day'], avg_res_df['Agent_Action'], label='Average Agent Policy', color='red', marker='x',
-             linestyle='--', linewidth=2)
+    ax1.plot(avg_res_df['Day'], avg_res_df['Agent_Action'], label='Agent Policy (on Average State)', color='red',
+             marker='x', linestyle='--', linewidth=2)
 
-    # הוספת קו חציון
-    ax1.axvline(x=median_day_value, color='black', linestyle='--', linewidth=2, alpha=0.7, label='Median Day')
-    ax1.text(median_day_value + 0.5, NUM_ACTIONS * 0.9, f'Median: {median_day_value}', color='black', fontsize=10,
+    # קו חציון (הוספתי עיצוב g : כדי שמספרים כמו 14.5 יודפסו יפה)
+    ax1.axvline(x=median_day_value, color='black', linestyle='--', linewidth=2, alpha=0.7,
+                label=f'Exp Median ({median_day_value:g} Days)')
+    ax1.text(median_day_value + 0.5, NUM_ACTIONS * 0.9, f'Median: {median_day_value:g}', color='black', fontsize=10,
              fontweight='bold', bbox=dict(facecolor='white', alpha=0.8, edgecolor='none'))
 
-    ax1.set_title(f'Generalization Test: Averaged Over {len(selected_plants)} Plants', fontsize=16)
-    ax1.set_ylabel(f'Avg Action Level (0-{NUM_ACTIONS - 1})', fontsize=12)
+    ax1.set_title(f'Experiment {exp_id_val}: Agent vs Virtual Average Plant (from {num_plants} plants)', fontsize=16)
+    ax1.set_ylabel(f'Action Level (0-{NUM_ACTIONS - 1})', fontsize=12)
     ax1.set_ylim(-0.5, NUM_ACTIONS - 0.5)
     ax1.legend(loc='upper right')
     ax1.grid(True, alpha=0.3)
@@ -1118,32 +1086,28 @@ def analyze_experiment_prediction_final_evaporation_percentage_all_plants(model_
     props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
     ax1.text(0.02, 0.95, stats_text, transform=ax1.transAxes, fontsize=11, verticalalignment='top', bbox=props)
 
-    # --- גרף 2: שגיאה ---
-    ax2.bar(valid_rows['Day'], valid_rows['Diff'], color='purple', alpha=0.7)
-
-    # הוספת קו חציון
+    if not valid_rows.empty:
+        ax2.bar(valid_rows['Day'], valid_rows['Diff'], color='purple', alpha=0.7)
     ax2.axvline(x=median_day_value, color='black', linestyle='--', linewidth=2, alpha=0.7)
-
-    ax2.set_title('Average Prediction Error per Day', fontsize=14)
-    ax2.set_ylabel('Avg Diff (Error)')
+    ax2.set_title(f'Experiment {exp_id_val}: Prediction Error per Day', fontsize=14)
+    ax2.set_ylabel('Abs Diff (Error)')
     ax2.grid(axis='y', alpha=0.3)
     fig1.tight_layout()
 
-    # --- גרף 3: ריוורד מצטבר ---
     fig2, ax3 = plt.subplots(figsize=(14, 6))
-    ax3.plot(avg_res_df['Day'], avg_res_df['Real_Accumulated'], label='Avg Real Plant Growth', color='dodgerblue',
-             marker='o', linewidth=3)
-    ax3.plot(avg_res_df['Day'], avg_res_df['Agent_Accumulated'], label='Avg Agent Policy Growth', color='forestgreen',
-             marker='^', linestyle='-', linewidth=3)
+    ax3.plot(avg_res_df['Day'], avg_res_df['Real_Accumulated'], label='Virtual Average Plant Growth',
+             color='dodgerblue', marker='o', linewidth=3)
+    ax3.plot(avg_res_df['Day'], avg_res_df['Agent_Accumulated'], label='Agent Policy Expected Growth',
+             color='forestgreen', marker='^', linestyle='-', linewidth=3)
 
-    # הוספת קו חציון
-    ax3.axvline(x=median_day_value, color='black', linestyle='--', linewidth=2, alpha=0.7, label='Median Day')
-    ax3.text(median_day_value + 0.5, ax3.get_ylim()[1] * 0.9, f'Median: {median_day_value}', color='black', fontsize=10,
-             fontweight='bold', bbox=dict(facecolor='white', alpha=0.8, edgecolor='none'))
+    ax3.axvline(x=median_day_value, color='black', linestyle='--', linewidth=2, alpha=0.7,
+                label=f'Exp Median ({median_day_value:g} Days)')
+    ax3.text(median_day_value + 0.5, ax3.get_ylim()[1] * 0.9, f'Median: {median_day_value:g}', color='black',
+             fontsize=10, fontweight='bold', bbox=dict(facecolor='white', alpha=0.8, edgecolor='none'))
 
-    ax3.set_title(f'Average Accumulated Reward over {len(avg_res_df)} Days', fontsize=16)
+    ax3.set_title(f'Experiment {exp_id_val}: Accumulated Reward over {len(avg_res_df)} Days', fontsize=16)
     ax3.set_xlabel('Day in Experiment', fontsize=12)
-    ax3.set_ylabel('Average Accumulated Gain (grams)', fontsize=12)
+    ax3.set_ylabel('Accumulated Gain (grams)', fontsize=12)
     ax3.legend(loc='upper left', fontsize=12)
     ax3.grid(True, alpha=0.4)
     fig2.tight_layout()
@@ -1151,7 +1115,265 @@ def analyze_experiment_prediction_final_evaporation_percentage_all_plants(model_
     plt.show()
 
 
+# =====================================================================
+# 4. הפונקציה הראשית ("המנצח")
+# =====================================================================
+def analyze_experiment_prediction_per_experiment(model_file):
+    # טעינה והכנה
+    df, policy, expected_rewards, is_cluster_model, NUM_ACTIONS, target_soil, action_method = load_and_preprocess_data(
+        model_file)
 
+    known_states = list(policy.keys())
+
+    # --- הגדרת סובלנות (Tolerance) לדיוק ---
+    TOLERANCE = 2
+
+    # --- משתנים לאיסוף נתונים גלובליים ---
+    global_all_errors = []
+
+    # ריצה על כל הניסויים
+    for exp_id_val, exp_group in df.groupby('exp_ID'):
+        num_plants = exp_group['unique_id'].nunique()
+
+        if num_plants == 0:
+            continue
+
+        # חישוב החציון הספציפי לניסוי הנוכחי
+        plant_durations = exp_group.groupby('unique_id')['day_num'].nunique()
+        experiment_median_days = plant_durations.median()
+
+        print(f"\n{'=' * 50}")
+        print(
+            f"Processing Experiment: {exp_id_val} | Valid Plants: {num_plants} | Median Days: {experiment_median_days:g}")
+
+        # הרצת הניסוי והשוואה
+        # שים לב: אנחנו כבר לא משתמשים במשתנה accuracy הישן שחוזר, כי נחשב אותו חכם יותר כאן
+        avg_res_df, valid_rows, _, exp_avg_temp, exp_avg_hum = evaluate_virtual_plant(
+            exp_group, policy, expected_rewards, is_cluster_model, known_states
+        )
+
+        if avg_res_df is None or valid_rows.empty:
+            print(f"CRITICAL: Agent recognized NONE of the states in Experiment {exp_id_val}.")
+            print(f"{'=' * 50}")
+            continue
+
+        # --- חישוב נתוני השגיאה והדיוק מתוך ה-Diff הקיים ---
+        current_exp_mae = valid_rows['Diff'].mean()
+        exp_total_preds = len(valid_rows)
+
+        # דיוק נוקשה (בדיוק אותה פעולה, קטן מ-0.5 בגלל עיגולי ממוצעים)
+        exp_strict_acc = (valid_rows['Diff'] < 0.5).mean() if exp_total_preds > 0 else 0
+
+        # דיוק גמיש (סטייה של עד X מדרגות פעולה)
+        exp_relaxed_acc = (valid_rows['Diff'] <= TOLERANCE).mean() if exp_total_preds > 0 else 0
+
+        # איסוף השגיאות לחישוב הגלובלי בסוף
+        global_all_errors.extend(valid_rows['Diff'].tolist())
+
+        # הדפסת האקלים, הדיוקים והשגיאה לניסוי הנוכחי
+        print(f"Climate Averages -> Temp: {exp_avg_temp:.1f}°C | Humidity: {exp_avg_hum:.1f}%")
+        print(f"--> Strict Accuracy (Exact): {exp_strict_acc:.1%}")
+        print(f"--> Relaxed Accuracy (+/- {TOLERANCE} levels): {exp_relaxed_acc:.1%}")
+        print(f"--> Model Average Error (MAE): {current_exp_mae:.2f} action levels")
+        print(f"{'=' * 50}")
+
+        # ציור הגרפים (מעבירים את הדיוק הגמיש כדי שהוא זה שיוצג בתיבת הטקסט בגרף)
+        plot_experiment_results(exp_id_val, avg_res_df, valid_rows, NUM_ACTIONS, experiment_median_days, num_plants,
+                                exp_relaxed_acc)
+
+    # =====================================================================
+    # --- סיכום גלובלי בסיום כל הניסויים ---
+    # =====================================================================
+    print(f"\n{'#' * 50}")
+    print("=== GLOBAL AGENT PERFORMANCE SUMMARY ===")
+    if global_all_errors:
+        global_mae = sum(global_all_errors) / len(global_all_errors)
+
+        # חישוב אחוזים גלובליים
+        global_strict_acc = sum(1 for e in global_all_errors if e < 0.5) / len(global_all_errors)
+        global_relaxed_acc = sum(1 for e in global_all_errors if e <= TOLERANCE) / len(global_all_errors)
+
+        print(f"Overall Strict Accuracy (Exact): {global_strict_acc:.1%}")
+        print(f"Overall Relaxed Accuracy (+/- {TOLERANCE} levels): {global_relaxed_acc:.1%}")
+        print(f"Overall Average Error (MAE) across ALL experiments: {global_mae:.2f} action levels")
+        print(f"Total valid daily predictions evaluated: {len(global_all_errors)}")
+    else:
+        print("No valid predictions were made across any experiment.")
+    print(f"{'#' * 50}\n")
+
+
+###########random plant############
+# =====================================================================
+# 2b. פונקציית השוואה לצמח יחיד אמיתי
+# =====================================================================
+def evaluate_single_plant(plant_df, policy, expected_rewards, is_cluster_model, known_states):
+    # חישוב אקלים ממוצע של הצמח להדפסה
+    exp_avg_temp = plant_df['avg_temp'].mean()
+    exp_avg_hum = plant_df['avg_humidity'].mean()
+
+    # חישוב ריוורד יומי לצמח הספציפי
+    plant_df = plant_df.sort_values('day_num').copy()
+    plant_df['Real_Reward_Daily'] = plant_df['start_weight'].shift(-1) - plant_df['start_weight']
+    plant_df['Real_Reward_Daily'] = plant_df['Real_Reward_Daily'].fillna(0)
+
+    if 'avg_par' not in plant_df.columns:
+        plant_df['avg_par'] = 0
+
+    all_results = []
+    correct_predictions = 0
+    total_known_states = 0
+
+    for _, row in plant_df.iterrows():
+        day = int(row['day_num'])
+        w_real = row['start_weight']
+        t_real = row['avg_temp']
+        h_real = row['avg_humidity']
+        p_real = row['avg_par']
+
+        real_reward_daily = row['Real_Reward_Daily']
+        real_action = int(row['real_action_discrete'])  # כאן זו פעולה אמיתית ושלמה (לא ממוצעת)
+
+        if is_cluster_model:
+            current_climate = np.array([t_real, h_real, p_real])
+            unique_climates = list(set([(s[0], s[1], s[2]) for s in known_states]))
+            closest_climate = min(unique_climates, key=lambda c: np.sum((np.array(c) - current_climate) ** 2))
+            states_with_this_climate = [s for s in known_states if (s[0], s[1], s[2]) == closest_climate]
+            closest_state = min(states_with_this_climate, key=lambda s: abs(s[3] - w_real))
+            state = closest_state
+        else:
+            state = None
+
+        if state in policy:
+            agent_action = policy[state]
+            total_known_states += 1
+
+            if agent_action == real_action:
+                correct_predictions += 1
+
+            search_key = (tuple(state), int(agent_action))
+            agent_reward_daily = expected_rewards.get(search_key, 0)
+        else:
+            agent_action = np.nan
+            agent_reward_daily = 0
+
+        all_results.append({
+            'Day': day,
+            'Real_Action': real_action,
+            'Agent_Action': agent_action,
+            'Diff': abs(real_action - agent_action) if not pd.isna(agent_action) else None,
+            'Real_Reward': real_reward_daily,
+            'Agent_Reward': agent_reward_daily
+        })
+
+    res_df = pd.DataFrame(all_results)
+    if res_df.empty:
+        return None, None, 0, exp_avg_temp, exp_avg_hum
+
+    res_df['Real_Accumulated'] = res_df['Real_Reward'].cumsum()
+    res_df['Agent_Accumulated'] = res_df['Agent_Reward'].cumsum()
+
+    valid_rows = res_df.dropna(subset=['Agent_Action'])
+    accuracy = correct_predictions / total_known_states if total_known_states > 0 else 0
+
+    return res_df, valid_rows, accuracy, exp_avg_temp, exp_avg_hum
+
+# =====================================================================
+# 3b. פונקציית ויזואליזציה לצמח רנדומלי
+# =====================================================================
+def plot_random_plant_results(exp_id_val, plant_id, res_df, valid_rows, NUM_ACTIONS, accuracy):
+    mae = valid_rows['Diff'].mean() if not valid_rows.empty else 0
+
+    stats_text = (
+        f"Experiment: {exp_id_val}\n"
+        f"Random Plant ID: {plant_id}\n"
+        f"Total Days: {len(res_df)}\n"
+        f"Overall Accuracy: {accuracy:.1%}\n"
+        f"MAE (Avg Error): {mae:.2f}\n"
+        f"Total Plant Gain: {res_df['Real_Accumulated'].iloc[-1]:.1f}g\n"
+        f"Total Agent Gain: {res_df['Agent_Accumulated'].iloc[-1]:.1f}g"
+    )
+
+    fig1, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={'height_ratios': [2, 1]})
+
+    ax1.plot(res_df['Day'], res_df['Real_Action'], label='Real Plant Action', color='blue', marker='o', alpha=0.6,
+             linewidth=2)
+    ax1.plot(res_df['Day'], res_df['Agent_Action'], label='Agent Policy Action', color='red', marker='x',
+             linestyle='--', linewidth=2)
+
+    ax1.set_title(f'Experiment {exp_id_val}: Agent vs Random Plant (ID: {plant_id})', fontsize=16)
+    ax1.set_ylabel(f'Action Level (0-{NUM_ACTIONS - 1})', fontsize=12)
+    ax1.set_ylim(-0.5, NUM_ACTIONS - 0.5)
+    ax1.legend(loc='upper right')
+    ax1.grid(True, alpha=0.3)
+
+    props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+    ax1.text(0.02, 0.95, stats_text, transform=ax1.transAxes, fontsize=11, verticalalignment='top', bbox=props)
+
+    if not valid_rows.empty:
+        ax2.bar(valid_rows['Day'], valid_rows['Diff'], color='purple', alpha=0.7)
+
+    ax2.set_title(f'Experiment {exp_id_val}: Prediction Error per Day', fontsize=14)
+    ax2.set_ylabel('Abs Diff (Error)')
+    ax2.grid(axis='y', alpha=0.3)
+    fig1.tight_layout()
+
+    fig2, ax3 = plt.subplots(figsize=(14, 6))
+    ax3.plot(res_df['Day'], res_df['Real_Accumulated'], label='Real Plant Growth', color='dodgerblue', marker='o',
+             linewidth=3)
+    ax3.plot(res_df['Day'], res_df['Agent_Accumulated'], label='Agent Expected Growth', color='forestgreen', marker='^',
+             linestyle='-', linewidth=3)
+
+    ax3.set_title(f'Experiment {exp_id_val}: Accumulated Reward for Plant {plant_id}', fontsize=16)
+    ax3.set_xlabel('Day in Experiment', fontsize=12)
+    ax3.set_ylabel('Accumulated Gain (grams)', fontsize=12)
+    ax3.legend(loc='upper left', fontsize=12)
+    ax3.grid(True, alpha=0.4)
+    fig2.tight_layout()
+
+    plt.show()
+
+# =====================================================================
+# 4b. הפונקציה הראשית (המגרילה צמח מכל ניסוי)
+# =====================================================================
+def analyze_experiment_prediction_random_plant(model_file):
+    # שימוש באותה פונקציית טעינה שכתבנו קודם!
+    df, policy, expected_rewards, is_cluster_model, NUM_ACTIONS, target_soil, action_method = load_and_preprocess_data(
+        model_file)
+
+    known_states = list(policy.keys())
+
+    # ריצה על כל הניסויים
+    for exp_id_val, exp_group in df.groupby('exp_ID'):
+        # אוספים את כל ה-ID הייחודיים של הצמחים בניסוי הזה
+        unique_plants = exp_group['unique_id'].unique()
+
+        if len(unique_plants) == 0:
+            continue
+
+        # --- מגרילים צמח אחד מתוך הניסוי ---
+        random_plant_id = random.choice(unique_plants)
+        plant_df = exp_group[exp_group['unique_id'] == random_plant_id]
+
+        print(f"\n{'=' * 50}")
+        print(
+            f"Processing Experiment: {exp_id_val} | Randomly Selected Plant: {random_plant_id} (out of {len(unique_plants)} plants)")
+
+        # הרצת ההשוואה לצמח האקראי שנבחר
+        res_df, valid_rows, accuracy, exp_avg_temp, exp_avg_hum = evaluate_single_plant(
+            plant_df, policy, expected_rewards, is_cluster_model, known_states
+        )
+
+        # הדפסת האקלים
+        print(f"Climate Averages -> Temp: {exp_avg_temp:.1f}°C | Humidity: {exp_avg_hum:.1f}%")
+        print(f"{'=' * 50}")
+
+        if res_df is None or valid_rows.empty:
+            print(
+                f"CRITICAL: Agent recognized NONE of the states for Plant {random_plant_id} in Experiment {exp_id_val}.")
+            continue
+
+        # ציור הגרפים (מעבירים את ה-ID של הצמח כדי שיופיע בכותרת)
+        plot_random_plant_results(exp_id_val, random_plant_id, res_df, valid_rows, NUM_ACTIONS, accuracy)
 
 def check_state_action_coverage(model_file):
     if not os.path.exists(model_file):
@@ -1201,12 +1423,11 @@ def check_state_action_coverage(model_file):
 
 #q_agent_sand_gmm_500_act_50_DT_GRANULARITY_new_state.pkl
 #q_agent_sand_gmm_500_act_50_EVAPORATION_PERCENTAGE_new_state.pkl
-#q_agent_sand_gmm_500_act_100_EVAPORATION_PERCENTAGE_new_state.pkl
 
-#q_agent_soil_gmm_121_act_50_DT_GRANULARITY_new_state.pkl
-#q_agent_soil_gmm_121_act_50_EVAPORATION_PERCENTAGE_new_state.pkl
-#q_agent_soil_gmm_121_act_100_EVAPORATION_PERCENTAGE_new_state.pkl
+#q_agent_soil_gmm_116_act_50_DT_GRANULARITY_new_state.pkl
+#q_agent_soil_gmm_116_act_50_EVAPORATION_PERCENTAGE_new_state.pkl
 if __name__ == "__main__":
-    target_model = "q_agent_soil_gmm_121_act_100_EVAPORATION_PERCENTAGE_new_state.pkl"
+    target_model = "q_agent_sand_gmm_500_act_50_DT_GRANULARITY_new_state.pkl"
     # check_state_action_coverage(target_model)
-    analyze_experiment_prediction_final_evaporation_percentage_all_plants(target_model)
+    analyze_experiment_prediction_per_experiment(target_model)
+    # analyze_experiment_prediction_random_plant(target_model)

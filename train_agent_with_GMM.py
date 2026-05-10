@@ -66,10 +66,10 @@ def train_plant_agent():
     # 0. הגדרות (Configuration)
     # ==============================================================================
 
-    NUM_ACTIONS = 100
+    NUM_ACTIONS = 50 #todo change
 
     # שם הקובץ הסופי שיצרנו ב-Pipeline
-    input_file = os.path.join("data", "tomato_mdp_final_with_pnw.parquet")
+    input_file = os.path.join("data", "tomato_mdp_final_with_pnw_updated.parquet")
 
     # ==============================================================================
     # 1. הכנת הנתונים (Data Preprocessing)
@@ -103,16 +103,13 @@ def train_plant_agent():
     if ACTION_CALC_METHOD == 'DT_NORMALIZED':
         min_dt = df['dt'].min()
         max_dt = df['dt'].max()
-
         df['stomatal_opening'] = (df['dt'] - min_dt) / (max_dt - min_dt)
         df['action_discrete'] = pd.cut(df['stomatal_opening'], bins=NUM_ACTIONS, labels=False)
 
     elif ACTION_CALC_METHOD == 'EVAPORATION_PERCENTAGE':
         df['evap_pct'] = (df['dt'] / df['pnw']) * 100
-
         df['evap_pct'] = df['evap_pct'].replace([np.inf, -np.inf], np.nan)
         df = df.dropna(subset=['evap_pct'])
-
         df['action_discrete'] = pd.cut(df['evap_pct'], bins=NUM_ACTIONS, labels=False)
 
     elif ACTION_CALC_METHOD == 'DT_GRANULARITY':
@@ -124,48 +121,16 @@ def train_plant_agent():
 
     print("Normalizing data and applying GMM...")
 
-    state_cols = ['avg_temp', 'avg_humidity', 'avg_par']#['start_weight', 'avg_temp', 'avg_humidity', 'avg_par']
+    state_cols = ['avg_temp', 'avg_humidity', 'avg_par']
 
     scaler = MinMaxScaler()
     df_normalized = pd.DataFrame(scaler.fit_transform(df[state_cols]), columns=state_cols)
 
-    ###########################################
-    # print("Generating BIC Score plot to justify the number of states...")
-    # k_values_to_test = [200, 300, 400, 500, 510,520,682, 720]
-    # bic_scores = []
-    #
-    # # בודקים כמה "טעות" יש בכל בחירה של מספר מצבים לפי BIC
-    # for k in k_values_to_test:
-    #     temp_gmm = GaussianMixture(n_components=k, random_state=42, n_init=3)
-    #     temp_gmm.fit(df_normalized)
-    #     bic_scores.append(temp_gmm.bic(df_normalized))
-    #
-    # # מציירים את הגרף ושומרים אותו
-    # plt.figure(figsize=(10, 6))
-    # plt.plot(k_values_to_test, bic_scores, marker='o', linestyle='-', color='teal', linewidth=2)
-    # plt.title(f'GMM BIC Score For Optimal States (Soil: {target_soil})', fontsize=14)
-    # plt.xlabel('Number of States (Components)', fontsize=12)
-    # plt.ylabel('BIC Score (Lower is Better)', fontsize=12)
-    # plt.grid(True, linestyle='--', alpha=0.7)
-    #
-    # gmm_plot_filename = f"gmm_bic_method_{target_soil}.png"
-    # plt.savefig(gmm_plot_filename, dpi=300)
-    # print(f"Saved BIC plot as '{gmm_plot_filename}'. Look for the MINIMUM point!")
-    # plt.close()
-
-    ###########################################
-
-    # ג. GMM
-    NUM_STATES = 500 #sand 500 #soil 121 # todo check by the graph
+    NUM_STATES = 500 #todo #sand 500 #soil 116
     print(f"Running final GMM with {NUM_STATES} components...")
-    # visualize_clustering_process(df, state_cols, NUM_STATES, target_soil) #todo fix this visualize
 
     gmm = GaussianMixture(n_components=NUM_STATES, random_state=42, n_init=5)
-
-    # מקבלים לאיזה אשכול שייכת כל שורה
     cluster_labels = gmm.fit_predict(df_normalized)
-
-    # ב-GMM מרכזי הכובד נקראים means_
     centroids_real = scaler.inverse_transform(gmm.means_)
 
     df[state_cols] = centroids_real[cluster_labels]
@@ -183,9 +148,9 @@ def train_plant_agent():
 
     mdp_state_cols = state_cols + ['weight_state']
 
-    mdp_model = PlantMDPCluster(  # <--- שימוש במחלקה החדשה
+    mdp_model = PlantMDPCluster(
         data_path=temp_file,
-        state_cols=mdp_state_cols,  # <--- רשימת העמודות הטהורה
+        state_cols=mdp_state_cols,
         action_col='action_discrete',
         weight_col='start_weight'
     )
@@ -207,7 +172,8 @@ def train_plant_agent():
         next_state_idx = np.random.choice(len(candidates), p=probs)
         next_state = candidates[next_state_idx]
 
-        reward = mdp_model.expected_rewards.get(str((state, action)), 0)
+        # --- התיקון הקריטי כאן! מורידים את ה-str() ---
+        reward = mdp_model.expected_rewards.get((state, action), 0)
 
         return next_state, reward
 
@@ -268,7 +234,6 @@ def train_plant_agent():
         pickle.dump(model_data, f)
 
     print("Model saved successfully!")
-
 
 if __name__ == "__main__":
     train_plant_agent()
