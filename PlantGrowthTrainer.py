@@ -115,16 +115,63 @@ class PlantGrowthTrainer:
         self.save_agent(soil_type, Q_table, mdp, resolved_config)
         os.remove(temp_file)
 
+    @staticmethod
+    def _modal_next_state(next_state_counts):
+        if not next_state_counts:
+            return None
+        return max(next_state_counts.items(), key=lambda kv: kv[1])[0]
+
+    def _build_counterfactual_index(self, Q_table, transitions, top_k=3):
+        optimal_successor = {}
+        alt_first_step    = {}
+        alt_actions       = {}
+        advantage         = {}
+
+        for s, q_per_a in Q_table.items():
+            if s not in transitions:
+                continue
+
+            sorted_a = sorted(q_per_a.items(), key=lambda kv: kv[1], reverse=True)
+            best_a, best_q = sorted_a[0]
+
+            optimal_successor[s] = self._modal_next_state(transitions[s].get(best_a))
+
+            picks = [a for a, _ in sorted_a[:top_k]]
+
+            # Worst *observed* action: an unseen action's Q is just the -10 penalty
+            # wall from training, with no real transition data to roll out from.
+            observed = list(transitions[s].keys())
+            if observed:
+                worst_observed = min(observed, key=lambda a: q_per_a.get(a, 0.0))
+                if worst_observed not in picks:
+                    picks.append(worst_observed)
+            alt_actions[s] = picks
+
+            for a in picks:
+                alt_first_step[(s, a)] = self._modal_next_state(transitions[s].get(a))
+
+            advantage[s] = {a: best_q - q for a, q in q_per_a.items()}
+
+        return optimal_successor, alt_first_step, alt_actions, advantage
+
     def save_agent(self, soil_type, Q_table, mdp, config):
         # Convert defaultdict for pickle
         trans = {s: {a: dict(ns) for a, ns in acts.items()} for s, acts in mdp.transitions.items()}
+
+        opt_succ, alt_first, alt_actions, adv = self._build_counterfactual_index(
+            Q_table, trans, top_k=3
+        )
 
         save_dict = {
             "q_table": Q_table,
             "policy": {s: max(v, key=v.get) for s, v in Q_table.items()},
             "soil_type": soil_type,
             "state_config": config,
-            "transitions": trans
+            "transitions": trans,
+            "optimal_successor": opt_succ,
+            "alt_first_step":    alt_first,
+            "alt_actions":       alt_actions,
+            "advantage":         adv,
         }
 
         os.makedirs(self.output_path, exist_ok=True)
