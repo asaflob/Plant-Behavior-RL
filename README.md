@@ -6,72 +6,94 @@ We utilize **Markov Decision Processes (MDP)**, **Q-Learning**, and **Gaussian M
 
 ---
 
-##Project Structure
+## Project Structure
 
-Here is an overview of the files and modules in this repository:
+### Core training pipeline
+* **`train_agent.py`** — **main entry point**. Single CLI for training under either clustering method (GMM or K-Means) and any of the supported action discretisations.
+* **`q_learning_algo.py`** — the tabular Q-learning loop shared by every trainer.
+* **`MDP_cluster.py`** — `PlantMDPCluster`: builds transitions and expected rewards over cluster-based states.
+* **`MDP.py`** — `PlantMDP`: legacy grid-based MDP (kept for `PlantGrowthTrainer`).
+* **`PlantGrowthTrainer.py`** — legacy config-driven trainer, driven by `config.json`.
 
-### Core Pipeline & Training
-* **`data/data_execution.py`**: The initial data preprocessing pipeline. Cleans raw sensor data and prepares it for the MDP.
-* **`train_agent_with_GMM.py`**: **[MAIN EXECUTABLE]** The primary script for training the agent. It loads processed data, applies GMM clustering to reduce the state space, builds the MDP, runs the Q-learning algorithm, and saves the trained model (`.pkl`) and convergence plots.
-* **`train_agent_knn.py`**: An alternative training script utilizing K-Means clustering instead of GMM.
-* **`q_learning_algo.py`**: Contains the core Q-Learning algorithm loop, separated for modularity and clarity.
+### Reusable building blocks
+* **`clustering.py`** — `Clusterer` protocol plus `GMMClusterer` / `KMeansClusterer`. Add a new method here without touching the trainer.
+* **`actions.py`** — action-discretisation strategies (`DT_NORMALIZED`, `EVAPORATION_PERCENTAGE`, `DT_GRANULARITY`).
+* **`agent_io.py`** — `SavedAgent` schema, `build_saved_agent`, and `load_agent` (with migration for older pickles).
 
-### Environment & MDP Models
-* **`MDP_cluster.py`**: The updated MDP class where environmental states are defined dynamically by clusters (GMM/K-Means) rather than manual bins.
-* **`MDP..py`**: The legacy MDP class used before transitioning to clustering methods.
-* **`PlantGrowthTrainer.py`**: A validation script used to test and verify the integrity of the MDP class before full model integration.
+### Backwards-compat shims
+* **`train_agent_with_GMM.py`**, **`train_agent_knn.py`** — thin wrappers that warn and forward to `train_agent.py`. Prefer the unified script.
 
-### Evaluation & Visualization
-* **`models_plant_vs_model.py`**: The evaluation module. Compares the RL agent's predicted actions against actual real-world plant behavior to measure exact accuracy and Mean Absolute Error (MAE).
-* **`prove_the_norm_in_k-means.py`**: Generates the "Elbow Method" plot for K-Means to justify the optimal number of clusters.
-* **`visualization_for_model_only_weight.py`**: Generates visualizations tracking the progression of plant weight over time.
+### Evaluation & visualisation
+* **`models_plant_vs_model.py`** — compares the trained policy against the average real plant per experiment. Reports exact and relaxed accuracy plus MAE.
+* **`prove_the_norm_in_k-means.py`** — illustrative plot showing why feature normalisation is required before clustering.
+* **`visualization_for_model_only_weight.py`** — overlay of soil-vs-sand average policy across the relative growth stage.
 
-### Testing & Development 
-* **`test_the_class.py`, `test_the_class_check.py`, etc.**: Various historical development scripts used during the initial phases of the project to ensure basic code execution before migrating to the clustering architecture.
+### Explainability (XAI)
+* **`XAI/shap_XAI.py`** — fits a Random Forest surrogate on the policy, then explains feature attributions via SHAP.
+* **`XAI/summarize_using_transitions.py`** — surfaces the top-K most "critical" states (largest spread between best and worst action Q-values).
+
+### Tests & archive
+* **`tests/smoke_test.py`** — synthetic-data end-to-end smoke test for the training pipeline. Run before merging changes that touch trainers, MDP, or the SavedAgent schema.
+* **`archive/`** — historical dev scripts and the original 1400-line `models_plant_vs_model.py`.
 
 ---
 
 ## How to Run the Project
 
 ### 1. Install Requirements
-Ensure you have Python installed, then install the necessary dependencies using the `requirements.txt` file:
 ```bash
 pip install -r requirements.txt
 ```
-*(Dependencies include: `pandas`, `numpy`, `scikit-learn`, `matplotlib`)*
+(Dependencies include `pandas`, `numpy`, `scikit-learn`, `scipy`, `matplotlib`, `shap`.)
 
 ### 2. Process the Data
-Before training, you must process the raw greenhouse data. Run the data execution script:
+Run the data preprocessing pipeline to generate the `.parquet` files in `data/`.
 ```bash
 python data/data_execution.py
 ```
-*This will generate the required `.parquet` files (e.g., `tomato_mdp_final_with_pnw.parquet`) in the `data/` directory.*
 
 ### 3. Train the Agent
-To train the main model using GMM clustering (recommended):
+The unified trainer covers both clustering methods:
+
 ```bash
-python train_agent_with_GMM.py
+# Default: GMM, sand, 500 states, 50 actions, EVAPORATION_PERCENTAGE
+python train_agent.py
+
+# K-Means alternative
+python train_agent.py --clustering kmeans --soil soil --num-states 121
+
+# Tune number of actions or action method
+python train_agent.py --num-actions 50 --action-method DT_GRANULARITY
 ```
-**What this script does:**
-1. Filters data by soil type (Sand/Soil).
-2. Calculates discrete action spaces (e.g., Evaporation Percentage).
-3. Normalizes environmental states and clusters them using GMM.
-4. Builds the transition matrix and MDP.
-5. Runs Q-Learning until convergence.
-6. Outputs a convergence plot (`.png`) and saves the trained policy (`.pkl`).
+
+The script prints occupancy stats, runs Q-Learning until convergence, saves a convergence plot (`convergence_plot_*.png`), and writes a `SavedAgent` pickle (`q_agent_*.pkl`).
 
 ### 4. Evaluate the Model
-To see how well the model performs compared to a real plant, run:
 ```bash
-python models_plant_vs_model.py
+python models_plant_vs_model.py path/to/q_agent_*.pkl
+python models_plant_vs_model.py path/to/q_agent_*.pkl --coverage-only
+```
+
+### 5. Explain the Policy
+```bash
+python XAI/summarize_using_transitions.py   # top-K critical states
+python XAI/shap_XAI.py                       # surrogate + SHAP plots
 ```
 
 ---
 
 ## Methodology Highlights
-* **Action Granularity:** We experiment with different stomatal action definitions, including Discrete Transpiration (DT) and Evaporation Percentage relative to Plant Net Weight (PNW).
-* **State Dimensionality Reduction:** Raw combinations of Temperature, Humidity, and Light create an impossibly large state space. We use **GMM** to group these into realistic, distinct environmental "states" (e.g., 200 states for Sand), allowing the Q-learning algorithm to converge efficiently.
-* **Future Work:** Transitioning from daily averages to 15-minute intervals using Monte Carlo algorithms, and integrating Explainable AI (XAI) to interpret the policy.
+* **Action Granularity:** Several stomatal action definitions are supported, including Discrete Transpiration (DT) and Evaporation Percentage relative to Plant Net Weight (PNW).
+* **State Dimensionality Reduction:** Raw combinations of Temperature, Humidity, and Light create an enormous state space. **GMM** groups them into a tractable number of environmental "states" (e.g. 500 for Sand, ~120 for Soil) so Q-learning converges efficiently.
+* **Future Work:** Moving from daily averages to 15-minute intervals via Monte Carlo, and deepening the XAI integration to interpret the policy at scale.
+
+---
+
+## Extending the Project
+
+* **New clustering method.** Implement the `Clusterer` protocol in `clustering.py`, register it in `build_clusterer`. The trainer picks it up automatically.
+* **New action discretisation.** Add a function in `actions.py` and register it in `DISCRETIZERS`. CLI choices update on the next change to `train_agent.parse_args`.
+* **New saved-model field.** Add it to the `SavedAgent` dataclass in `agent_io.py` and bump `SCHEMA_VERSION`. `load_agent` handles migrating old pickles forward.
 
 ---
 *Developed by Team 118: Asaf Vitenshtein & Dor Snapiri at the Hebrew University of Jerusalem.*
